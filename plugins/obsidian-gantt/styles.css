@@ -1,0 +1,24 @@
+.workspace-leaf-content .view-content.second-brain-gantt {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.second-brain-gantt-frame {
+  display: block;
+  flex: 1 1 auto;
+  border: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+.second-brain-gantt-status {
+  padding: 1.5rem;
+  overflow: auto;
+  max-width: 60rem;
+}
+.second-brain-gantt-status pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}

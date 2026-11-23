@@ -1,0 +1,9 @@
+{
+  "id": "obsidian-gantt",
+  "name": "Второй мозг · Гант",
+  "version": "0.1.0",
+  "minAppVersion": "1.7.2",
+  "description": "Открывает планы текущего хранилища на редактируемой шкале времени.",
+  "author": "Second Brain",
+  "isDesktopOnly": true
+}

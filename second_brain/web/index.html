@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f8f8f3">
+  <title>Второй мозг · Путеводитель</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/app.css">
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#content">Перейти к содержимому</a>
+  <header class="masthead">
+    <div class="masthead-inner">
+      <a class="wordmark" href="#home" aria-label="Второй мозг — главная">
+        <span class="brand-symbol" aria-hidden="true"><i></i><b></b></span>
+        Второй мозг
+      </a>
+      <nav aria-label="Главная навигация">
+        <a data-nav="home" aria-current="page" href="#home">Путеводитель</a>
+        <a data-nav="mine" href="#mine">Мои направления</a>
+      </nav>
+      <div class="masthead-utilities">
+        <span class="local-status"><i aria-hidden="true"></i>Локальное хранилище</span>
+        <a class="about-link" href="/about.html"><span class="about-icon" aria-hidden="true">i</span>О системе</a>
+      </div>
+    </div>
+  </header>
+  <main id="content" tabindex="-1">
+    <section id="home" aria-labelledby="home-title">
+      <div class="hero">
+        <img class="hero-art" src="/images/desk.jpg" alt="" fetchpriority="high">
+        <div class="hero-copy">
+          <p class="hero-label"><span class="mini-book" aria-hidden="true"></span>Деморежим</p>
+          <h1 id="home-title">Второй мозг<br><em>на практике</em></h1>
+          <p class="hero-intro">Найдите ответ в своих записях, откройте его источник и попробуйте добавить своё направление.</p>
+          <a class="button button-primary hero-start" href="#start">Начать знакомство <span aria-hidden="true">→</span></a>
+        </div>
+      </div>
+      <div id="guide-error" hidden></div>
+      <section class="panel ask-home" aria-labelledby="ask-home-title">
+        <div>
+          <h2 id="ask-home-title" class="panel-heading">Спросить по записям</h2>
+          <p>Один вопрос по ИТ-проектам, личным заметкам и парфюмерии.</p>
+        </div>
+        <div id="home-question"></div>
+      </section>
+      <section class="library" aria-labelledby="library-title">
+        <div class="section-heading">
+          <div>
+            <h2 id="library-title">Три направления</h2>
+            <p>Начните с любой темы. Все примеры живут в одном хранилище.</p>
+          </div>
+          <div class="progress">
+            <span data-progress aria-live="polite">0 из 3 пройдено</span>
+            <span class="progress-track" aria-hidden="true"><span data-progress-bar></span></span>
+          </div>
+        </div>
+        <div class="cards">
+          <a class="direction-card work" href="#example/1">
+            <div class="card-image"><img src="/images/work.jpg" alt=""><span class="done" data-completed="1" hidden>✓ Пройдено</span></div>
+            <div class="card-copy"><h3>ИТ-проекты</h3>
+              <p>Вспомните решения по «Маяку» и «Орбите» и сверьте их с карточками проектов.</p>
+              <span class="card-link">Открыть пример <span aria-hidden="true">↗</span></span>
+            </div>
+          </a>
+          <a class="direction-card personal" href="#example/2">
+            <div class="card-image"><img src="/images/personal.jpg" alt=""><span class="done" data-completed="2" hidden>✓ Пройдено</span></div>
+            <div class="card-copy"><h3>Личное</h3>
+              <p>Найдите, где лежит запасной ключ, по одной записи в памятке для поездок.</p>
+              <span class="card-link">Открыть пример <span aria-hidden="true">↗</span></span>
+            </div>
+          </a>
+          <a class="direction-card perfume" href="#example/3">
+            <div class="card-image"><img src="/images/perfume.jpg" alt=""><span class="done" data-completed="3" hidden>✓ Пройдено</span></div>
+            <div class="card-copy"><h3>Парфюмерия</h3>
+              <p>Узнайте, как раскрылся «Кедр» через два часа и что об этом говорит запись.</p>
+              <span class="card-link">Открыть пример <span aria-hidden="true">↗</span></span>
+            </div>
+          </a>
+        </div>
+      </section>
+      <aside class="add-strip">
+        <div class="add-emblem" aria-hidden="true">＋</div>
+        <div><h2>Своё направление</h2><p>Сохраните первую заметку о том, что важно вам.</p></div>
+        <a class="button button-secondary" href="#new">Добавить направление <span aria-hidden="true">→</span></a>
+      </aside>
+    </section>
+    <section id="detail" hidden></section>
+  </main>
+  <template id="question-form">
+    <form class="free-question" aria-label="Вопрос по трём направлениям">
+      <label>Ваш вопрос
+        <input name="query" type="search" maxlength="1000" required placeholder="Что вы хотите вспомнить?">
+      </label>
+      <button class="button button-primary" type="submit">Найти ответ</button>
+      <p class="query-example">Например, <button class="suggested-query" type="button">Что мы решили по Маяку и Орбите?</button></p>
+    </form>
+  </template>
+  <noscript><p>Для прохождения примеров включите JavaScript в браузере.</p></noscript>
+</body>
+</html>
