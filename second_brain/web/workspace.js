@@ -2,6 +2,8 @@ import { cleanupNotice, mountCleanup } from "./demo-cleanup.js";
 import { intakeViews } from "./intake.js";
 import { planningView } from "./gantt.js";
 import { activityHelp } from "./activity-help.js";
+import { mountRelationMap } from "./relation-map.js";
+import { relationMapHelp } from "./relation-map-help.js";
 
 (() => {
   const main = document.getElementById("content");
@@ -9,7 +11,7 @@ import { activityHelp } from "./activity-help.js";
   const embedded = query.get("embed") === "1";
   document.body.classList.toggle("gantt-embed", embedded);
   const typeNames = { direction: "Направление", project: "Проект", note: "Заметка" };
-  const sections = { overview: "Обзор хранилища", records: "Карточки", map: "Карта связей" };
+  const sections = { overview: "Обзор хранилища", records: "Карточки" };
   const fields = { status: "Статус", projectStart: "Согласованное начало", due: "Срок", nextStep: "Следующий шаг" };
   let data, byId, directions, pageVersion = 0;
 
@@ -193,7 +195,7 @@ import { activityHelp } from "./activity-help.js";
     capture.append(node("p", "muted", "Сохраните текст, файл или скриншот переписки для следующего разбора в Codex."),
       link("Добавить материал", "#inbox", "button button-primary"));
     row.append(areas, capture);
-    main.append(stats, row, projectTable(data.records.filter(r => r.type === "project")));
+    main.append(stats, row, projectTable(data.records.filter(r => r.type === "project")), folderPanel());
     await mountCleanup(cleanup, api, node);
   }
 
@@ -235,36 +237,9 @@ import { activityHelp } from "./activity-help.js";
     main.append(sectionNode);
   }
 
-  function mapPage() {
-    main.append(pageHead(data.name, sections.map, button("Обновить", "button button-secondary", render)));
-    const panel = section("Связи направлений");
-    const tree = node("div", "map-tree");
-    for (const area of directions) {
-      const branch = node("div", "map-branch");
-      const root = link("", recordURL(area.id), "map-root");
-      root.append(node("small", "", typeNames.direction), node("strong", "", area.title));
-      const leaves = node("div", "map-leaves");
-      const children = data.records.filter(r => r.direction === area.id);
-      for (const record of children) {
-        const leaf = link("", recordURL(record.id), "map-leaf");
-        leaf.append(node("small", "", typeNames[record.type]), node("span", "", record.title));
-        leaves.append(leaf);
-      }
-      branch.append(root);
-      if (children.length) branch.append(leaves);
-      else branch.append(node("p", "map-empty", "Связанных карточек пока нет."));
-      tree.append(branch);
-    }
-    if (!directions.length) tree.append(node("p","muted","Направления пока не созданы."));
-    panel.append(tree);
-    main.append(panel);
-    const loose = data.records.filter(r => r.type !== "direction" && !directions.some(d => d.id === r.direction));
-    if (loose.length) {
-      const unlinked = section("Карточки без доступного направления");
-      unlinked.append(...loose.map(recordRow));
-      main.append(unlinked);
-    }
-    const folders = section("Папки хранилища");
+  function folderPanel() {
+    const folders = node("details", "work-panel overview-folders");
+    folders.append(node("summary", "work-heading", "Папки хранилища"));
     folders.append(node("p", "muted", "Счётчик включает карточки во вложенных папках."));
     const chips = node("ul","folder-set");
     for (const folder of data.folders) {
@@ -275,7 +250,7 @@ import { activityHelp } from "./activity-help.js";
       chips.append(li);
     }
     folders.append(chips);
-    main.append(folders);
+    return folders;
   }
 
   function recordFacts(record) {
@@ -313,16 +288,15 @@ import { activityHelp } from "./activity-help.js";
   async function recordPage(id, params, version) {
     const record = await api("record?" + new URLSearchParams({id}));
     if (version !== pageVersion) return;
-    const actions = [link("Редактировать", "#edit/" + encodeURIComponent(id), "button button-secondary")];
+    const actions = [link("Показать связи", "#map?" + new URLSearchParams({id}), "text-link"),
+      link("Редактировать", "#edit/" + encodeURIComponent(id), "button button-secondary")];
     if (record.type === "project") actions.unshift(link("Гант проекта", "#project-gantt/" + encodeURIComponent(id), "button button-primary"));
-    main.append(pageHead(typeNames[record.type] + " · " + data.name, record.title, ...actions));
+    main.replaceChildren(pageHead(typeNames[record.type] + " · " + record.vaultName, record.title, ...actions));
     const panel = node("section","work-panel");
+    const areaLine = node("p", "muted");
     if (record.type !== "direction") {
-      const area = byId.get(record.direction);
-      const p = node("p","muted", "Направление · ");
-      if (area) p.append(link(area.title, recordURL(area.id), "text-link"));
-      else p.append(scopeName(record));
-      panel.append(p);
+      areaLine.textContent = record.direction ? "Направление · " : "Без направления";
+      panel.append(areaLine);
     }
     if (record.aliases?.length) panel.append(node("p","muted","Другие названия · " + record.aliases.join(", ")));
     if (record.type === "project") panel.append(recordFacts(record));
@@ -349,16 +323,38 @@ import { activityHelp } from "./activity-help.js";
     }
     if (!record.body && !record.aliases?.length && record.type !== "project") panel.append(node("p","muted","Текст карточки пока пуст."));
     main.append(panel);
-    if (record.type === "direction") {
-      const children = data.records.filter(r => r.direction === id);
-      const related = section("Связанные карточки");
-      if (children.length) related.append(...children.map(recordRow));
-      else related.append(node("p", "muted", "Связанных карточек пока нет."));
-      const actions = node("div", "work-tools");
-      actions.append(newLink("project", id), link("Люди направления", "#people?" + new URLSearchParams({direction:id}), "text-link"));
-      related.append(actions);
-      main.append(related);
+    if (!record.direction && record.type !== "direction") return;
+    const mapURL = "#map?" + new URLSearchParams({id});
+    if (record.type !== "direction") {
+      const area = link("Открыть направление", recordURL(record.direction), "text-link");
+      areaLine.append(area);
+      const context = await api("map?" + new URLSearchParams({action:"focus", id})).catch(() => null);
+      if (version !== pageVersion || !context) return;
+      const direction = context.groups.find(group => group.key === "directions")?.items[0];
+      if (direction && !direction.missing) area.textContent = direction.title;
+      else area.replaceWith("Направление не найдено");
+      return;
     }
+    const related = section("Связанные карточки");
+    const shortcuts = node("div", "work-tools");
+    shortcuts.append(newLink("project", id), link("Люди направления", "#people?" + new URLSearchParams({direction:id}), "text-link"));
+    related.append(shortcuts);
+    main.append(related);
+    const context = await api("map?" + new URLSearchParams({action:"focus", id})).catch(() => null);
+    if (version !== pageVersion) return;
+    if (!context) { related.prepend(link("Открыть карту связей", mapURL, "text-link")); return; }
+    const links = node("div", "record-list");
+    for (const group of context.groups) {
+      for (const child of group.items) {
+        if (!child.missing && (child.type === "project" || child.type === "note")) {
+          links.append(link(child.title, recordURL(child.id), "record-row text-link"));
+        }
+      }
+    }
+    const count = context.groups.reduce((sum, group) => sum + group.total, 0);
+    if (count > links.childElementCount) links.append(link("Все связи · " + count, mapURL, "record-row text-link"));
+    if (!count) links.append(node("p", "muted", "Связанных карточек пока нет."));
+    shortcuts.before(links);
   }
 
   async function editPage(id, kind, params, version) {
@@ -488,12 +484,21 @@ import { activityHelp } from "./activity-help.js";
     const [page, recordId] = route.split("/");
     const isActivity = ["activity", "activity-help", "okr", "project-gantt"].includes(page);
     const isPlan = page === "plans" || page === "plan" || isActivity;
-    const nav = isActivity ? "activity" : isPlan ? "plans" : page === "person" ? "people" : ["new","edit","record"].includes(page) ? "records" : page;
+    const nav = page === "map-help" ? "map" : isActivity ? "activity" : isPlan ? "plans" : page === "person" ? "people" : ["new","edit","record"].includes(page) ? "records" : page;
     main.classList.toggle("planning-main", isPlan);
     main.setAttribute("aria-busy","true");
     try {
-      if (page === "activity-help") {
+      if (page === "map-help") {
+        main.replaceChildren(relationMapHelp(params));
+      } else if (page === "map") {
+        const view = node("div", "relation-map");
+        main.replaceChildren(view);
+        await mountRelationMap(view, {api, params, node, link, button, pageHead, counted});
+      } else if (page === "activity-help") {
         main.replaceChildren(activityHelp(params));
+      } else if (page === "record" && recordId) {
+        main.replaceChildren();
+        await recordPage(decodeURIComponent(recordId), params, version);
       } else if (isPlan) {
         const view = node("div", "planning-view");
         main.replaceChildren(view);
@@ -506,13 +511,11 @@ import { activityHelp } from "./activity-help.js";
         directions = data.records.filter(r => r.type === "direction");
         main.replaceChildren();
         if (page === "records") recordsPage(params);
-        else if (page === "map") mapPage();
         else if (["inbox","people","person"].includes(page)) {
           const view = node("div", "intake-view");
           main.append(view);
           await intake[page](view, {params, id: decodeURIComponent(recordId || ""), vault: data.name, directions});
         }
-        else if (page === "record" && recordId) await recordPage(decodeURIComponent(recordId),params,version);
         else if (page === "edit" && recordId) await editPage(decodeURIComponent(recordId),null,params,version);
         else if (page === "new") await editPage(null,recordId,params,version);
         else await overview();

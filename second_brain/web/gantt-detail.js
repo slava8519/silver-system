@@ -41,7 +41,10 @@ export function taskInspector(ui, settings) {
   const scope = [row.directionTitle, row.projectTitle].filter(Boolean).join(" / ");
   if (milestone || scope) identity.append(node("p", "gantt-context", [milestone ? "Веха" : "", scope].filter(Boolean).join(" · ")));
   const markdownLink = cardLinks(ui, root);
-  identity.append(markdownLink("Открыть карточку в Obsidian ↗", task.path));
+  const cardActions = node("div", "work-tools");
+  cardActions.append(markdownLink("Открыть карточку в Obsidian ↗", task.path));
+  if (!embedded) cardActions.append(link("Показать связи", "#map?" + new URLSearchParams({id:task.id}), "text-link"));
+  identity.append(cardActions);
 
   function byline(entry) {
     const parts = [authorText(entry)];

@@ -150,6 +150,20 @@ class Handler(BaseHTTPRequestHandler):
         elif self.mode == "work" and path == "/api/workspace":
             self._send(200, self.server.vault.overview())
             return
+        elif self.mode == "work" and path in ("/api/map", "/api/map/source"):
+            from .relation_map import RelationMap
+            service = RelationMap(self.server.vault.root)
+            if path == "/api/map/source":
+                result = service.read_source(params.get("id"), int(params.get("line", 0)), params.get("revision"))
+            else:
+                action = params.get("action", "home")
+                result = service.query(action, id=params.get("id"), group=params.get("group"),
+                                       query=params.get("query", ""), offset=int(params.get("offset", 0)),
+                                       limit=int(params.get("limit", 5)))
+                if action == "focus":
+                    result = {**result, "root": str(self.server.vault.root)}
+            self._send(200, result)
+            return
         elif self.mode == "work" and self._team_request(path, params, post=False):
             return
         elif self.mode == "work" and self._intake_page(path, params):
@@ -160,7 +174,7 @@ class Handler(BaseHTTPRequestHandler):
             record_id = parse_qs(url.query).get("id", [""])[0]
             if not record_id:
                 raise ValueError("Укажите ID карточки.")
-            self._send(200, self.server.vault.get_record(record_id))
+            self._send(200, {**self.server.vault.get_record(record_id), "vaultName": self.server.vault.root.name})
             return
         elif self.mode == "demo" and path == "/api/guide":
             self._send(200, guide.guide())

@@ -108,6 +108,7 @@ export function planningView(ui) {
         : link("Карточка проекта", "#record/" + encodeURIComponent(id), "text-link");
       navigation.append(link("← Проектная деятельность", "#activity", "back-link"), card);
     } else navigation.append(link("← Все планы", "#plans", "back-link"), okrLink(ui, planId));
+    if (!ui.embedded) navigation.append(link("Показать связи", "#map?" + new URLSearchParams({id}), "text-link"));
     view.append(navigation, connector);
     if (!projectView) {
       const params = new URLSearchParams(location.hash.split("?")[1]);
