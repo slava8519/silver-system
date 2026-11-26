@@ -48,8 +48,8 @@ def _schedule(root, planning, args):
         if args.history:
             return brief.page(reversed(service.history(args.task_id)), args.limit, args.offset)
         row = planning.task(args.task_id)
-        return {key: row[key] for key in ("id", "title", "path", "due", "dueLine", "forecast", "forecastLine",
-                                          "completed", "completedLine")}
+        return {key: row[key] for key in ("id", "title", "path", "baseline", "baselineLine", "due", "dueLine",
+                                          "forecast", "forecastLine", "completed", "completedLine") if key in row}
     if (args.source is None) != (args.line is None) or (args.quote is not None and args.source is None):
         raise ValueError("Для ссылки передайте --source ПУТЬ и --line N вместе.")
     sources = []
@@ -197,7 +197,7 @@ def run(root, args):
         entries = (e for e in row["latest"] if not args.manual or e["manual"])
         page = brief.page(entries, args.limit, args.offset)
         return {**{key: row[key] for key in ("id", "title", "kind", "revision", "path", "start", "due",
-                                             "forecast", "completed", "brief")},
+                                             "forecast", "completed", "brief", "baseline", "baselineLine", "readiness") if key in row},
                 "latest": page["items"], "latestTotal": page["total"], "truncated": page["truncated"]}
     if command == "task-create":
         return planning.create_task(args.title, project=args.project, direction=args.direction,

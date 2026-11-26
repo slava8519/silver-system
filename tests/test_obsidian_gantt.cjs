@@ -41,6 +41,7 @@ async function fixture(initial = stopped) {
   };
   class TFile { constructor() { this.extension = 'md'; } }
   const app = {
+    metadataCache: { getFileCache: () => ({}) },
     vault: {
       adapter: { getBasePath: () => __dirname },
       getAbstractFileByPath: p => p === 'Tasks/one.md' ? new TFile() : null
@@ -68,7 +69,8 @@ async function fixture(initial = stopped) {
     addSettingTab() {}
   }
   const modules = {
-    obsidian: { ItemView, Plugin, PluginSettingTab: class {}, TFile, Notice: class {} },
+    obsidian: { ItemView, Plugin, PluginSettingTab: class {}, TFile, Notice: class {},
+      resolveSubpath: (_cache, subpath) => subpath === '#Ход работ' ? {start: {line: 11}} : null },
     electron: { shell: { openExternal: href => external.push(href) } },
     [path.join(packageDir, 'server.js')]: { AdminServer: class {
       constructor(options) {
@@ -145,6 +147,8 @@ test('only a source message from the bound frame opens a file in the current vau
   assert.deepEqual(f.opened, []);
   f.send(event);
   assert.deepEqual(f.opened, [5]);
+  f.send({ ...event, data: { ...event.data, line: undefined, subpath: '#Ход работ' } });
+  assert.deepEqual(f.opened, [5, 11]);
 });
 
 test('a delayed verification cannot reopen a closed view; a legacy server shows upgrade guidance', async () => {

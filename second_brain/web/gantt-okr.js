@@ -1,3 +1,4 @@
+import {archiveStamp} from "./gantt-cycle.js";
 import {dateText} from "./gantt-axis.js";
 import {objectiveEditor, resultEditor, taskScope} from "./gantt-okr-forms.js";
 import {boardURL, resultURL, planName, threshold, reading, readiness, checkSummary} from "./gantt-okr-values.js";
@@ -40,7 +41,7 @@ async function boardPage(ui, view, planId, planURL) {
     if (data.progress?.value != null) bar.append(node("span","okr-period-progress",
       "Готовность инициатив · " + readiness(data.progress) + (data.progress.hasEstimates ? " с оценками" : "")));
     content.append(bar);
-    if (historical) content.append(node("p", "cycle-stamp", "Снимок на момент закрытия" + (plan.closedAt ? " · " + dateText(plan.closedAt.slice(0,10)) : "")));
+    if (historical) content.append(node("p", "cycle-stamp", archiveStamp(plan)?.text || "Снимок на момент закрытия" + (plan.closedAt ? " · " + dateText(plan.closedAt.slice(0,10)) : "")));
     async function created(saved, text) { draw(await api("plan/okr-board?id=" + encodeURIComponent(plan.id)), text, saved.id); }
     const targetNodes = new Map();
     if (objectives.length) {

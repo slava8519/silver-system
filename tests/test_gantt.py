@@ -4,6 +4,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from second_brain import storage
+from second_brain.cycles import Cycles
 from second_brain.gantt import Gantt
 from second_brain.plan_dates import Deadlines
 from second_brain.planning import Planning
@@ -30,6 +31,37 @@ class GanttTests(unittest.TestCase):
     def edit(self, field="brief", actor="ai", **kwargs):
         return self.gantt.edit({"id": self.task["id"], "revision": self.detail()["revision"], "field": field,
                                 "actor": actor, **kwargs})
+
+    def test_baseline_before_replanned_start_is_independent_of_due_and_forecast(self):
+        plan = self.plans.create_plan("План проверки партии")
+        self.plans.add_task(plan["id"], self.task["id"])
+        self.assertNotIn("baseline", self.detail())
+        self.path.write_text(self.path.read_text().replace(
+            "---\n", "---\nbaseline: 2026-02-12\nstart: 2026-02-19\nforecast: 2026-03-02\n", 1))
+        for row in (self.detail(), self.gantt.view(plan["id"])["items"][0]):
+            self.assertEqual((row["baseline"], row["start"], row["due"], row["forecast"]),
+                             ("2026-02-12", "2026-02-19", None, "2026-03-02"))
+            self.assertEqual(self.path.read_text().splitlines()[row["baselineLine"] - 1], "baseline: 2026-02-12")
+        agreed = Deadlines(self.root)
+        preview = agreed.preview(self.task["id"], "2026-03-03")
+        agreed.apply(self.task["id"], preview["after"], preview["revision"])
+        self.assertEqual(self.detail()["baseline"], "2026-02-12")
+
+    def test_closed_plan_keeps_the_recorded_task_status_without_assuming_a_completion_date(self):
+        plan = self.plans.create_plan("Проверка")
+        self.plans.add_task(plan["id"], self.task["id"])
+        self.assertNotIn("status", self.detail())
+        self.path.write_text(self.path.read_text().replace("---\n", "---\nstatus: Отменено\n", 1))
+        live = self.gantt.view(plan["id"])["items"][0]
+        self.assertEqual(live["status"], "Отменено")
+        self.assertEqual(self.path.read_text().splitlines()[live["statusLine"] - 1], "status: Отменено")
+        cycles = Cycles(self.root)
+        cycles.close(plan["id"], cycles.preview(plan["id"])["revision"])
+        self.path.write_text(self.path.read_text().replace("status: Отменено", "status: Переоткрыто"))
+        self.assertEqual(self.detail()["status"], "Переоткрыто")
+        closed = self.gantt.view(plan["id"])["items"][0]
+        self.assertEqual(closed["status"], "Отменено")
+        self.assertIsNone(closed["completed"])
 
     def test_three_directions_one_task_per_two_plans_and_start_optional(self):
         week = self.plans.create_plan("Неделя")

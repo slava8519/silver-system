@@ -1,5 +1,6 @@
 import {dateLabels, dateText, dayOf} from "./gantt-axis.js";
 import {cardLinks} from "./gantt-detail.js";
+import {readinessText} from "./gantt-detail-text.js";
 
 const stamp = new Intl.DateTimeFormat("ru-RU", {dateStyle: "long", timeStyle: "short"});
 
@@ -11,6 +12,15 @@ export function closedDay(value) {
   const at = new Date(value);
   return dayOf([String(at.getFullYear()).padStart(4, "0"), String(at.getMonth() + 1).padStart(2, "0"),
     String(at.getDate()).padStart(2, "0")].join("-"));
+}
+
+// A historical import can have a known export day and no recorded day of actual closure.
+export function archiveStamp(plan) {
+  if (!plan.archiveDates) return null;
+  const {closedOn, exportedOn} = plan.archiveDates;
+  if (closedOn) return {text: "Архивный цикл закрыт · " + dateText(closedOn), date: closedOn, label: "Закрытие"};
+  if (exportedOn) return {text: "Архивный снимок · выгрузка " + dateText(exportedOn), date: exportedOn, label: "Выгрузка"};
+  return {text: "Архивный снимок", date: null, label: "Фиксация снимка"};
 }
 
 export function cyclePreview(ui, planId, root, cancel, showClosed) {
@@ -123,6 +133,9 @@ export function snapshotInspector(ui, {plan, row, root, urlFor, deselect}) {
   if (row.missing) saved.append(node("p", "gantt-context", "На момент закрытия карточка была недоступна."));
   else {
     const dates = node("dl", "gantt-facts");
+    if (row.readiness?.value != null) {
+      dates.append(node("dt", "", "Готовность при закрытии"), node("dd", "", readinessText(row.readiness)));
+    }
     for (const [field, label] of Object.entries(dateLabels)) {
       if (field === "start" && row.kind === "milestone") continue;
       dates.append(node("dt", "", label), node("dd", "", row[field] ? dateText(row[field]) : "Нет даты"));

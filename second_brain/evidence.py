@@ -45,12 +45,17 @@ def linked_source(source):
     return {**source, "href": query._source_link(source, source["line"], source["ref"])}
 
 
-def verify_source_line(root, item):
+def verify_source_line(root, item, *, records=None):
     """Read the caller's quote and its complete line from the same file revision."""
     if not isinstance(item, dict):
         raise ValueError("Проверьте формат ссылки на строку.")
     path = storage._inside(root, _source_shape(item.get("path")))
-    record = storage.read_record(path, include_raw=True)
+    if records is not None and path in records:
+        record = records[path]
+    else:
+        record = storage.read_record(path, include_raw=True)
+        if records is not None:
+            records[path] = record
     number = item.get("line")
     if record["type"] not in ("note", "project") or type(number) is not int or number < 1:
         raise ValueError("Укажите положительный номер строки заметки или проекта.")
@@ -96,11 +101,11 @@ def require_event_date(date, sources):
         raise ValueError("Дата события должна быть подтверждена цитатой источника.")
 
 
-def resolve_source(root, reference):
+def resolve_source(root, reference, *, records=None):
     """Resolve a previously saved passage after a file rename or a line move."""
     ref = linked_source(reference)
     try:
-        source, _ = verify_source_line(root, ref)
+        source, _ = verify_source_line(root, ref, records=records)
         return {**source, "href": ref["href"]}
     except (OSError, ValueError):
         record, fragment = query.WorkspaceQuery(root, include_people=False).open_citation(ref)

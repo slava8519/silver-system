@@ -8,6 +8,8 @@ from pathlib import Path
 
 from second_brain import okr_progress_cli, storage
 from second_brain.cycles import Cycles
+from second_brain.gantt import Gantt
+from second_brain.project_gantt import ProjectGantt
 from second_brain.okr_progress import Progress, enrich_board, enrich_card
 
 
@@ -43,6 +45,41 @@ class WeightedProgress(unittest.TestCase):
         return self.service.set_readiness(task["id"], value=value, date=date, kind=kind, actor="manual",
                                           reason="Сверка владельца в лаборатории",
                                           revision=self.planning.task(task["id"])["revision"])
+
+    def test_gantt_reads_shared_evidence_once_and_preserves_unknown_zero_and_frozen_estimates(self):
+        project = storage.read_record(storage.create(self.root, "project", "Сборка образца", direction=self.area))
+        works = [self.planning.create_task(title, project=project["id"]) for title in ("Сбор", "Розлив", "Приёмка")]
+        first, second, unknown = works
+        kr = self.create_result([first, second])
+        self.weight(kr, 1)
+        for task in (first, second):
+            self.weight(kr, ".5", task)
+        for task in works:
+            self.planning.add_task(self.plan, task["id"])
+        note = storage.create(self.root, "note", "Без замеров", body="2026-11-23. Розлив и сбор готовы на 0%.")
+        source = {"path": str(note.relative_to(self.root)), "line": storage.read_record(note)["body_start"]}
+        for task, kind in ((first, "estimate"), (second, "fact")):
+            self.service.set_readiness(task["id"], value=0, date="2026-11-23", kind=kind, actor="ai",
+                                       source=source, revision=task["revision"])
+        gantt = Gantt(self.root)
+        for read in (lambda: gantt.view(self.plan), lambda: ProjectGantt(self.root).view(project["id"])):
+            with patch.object(storage, "read_record", wraps=storage.read_record) as reader:
+                rows = {row["id"]: row["readiness"] for row in read()["items"]}
+                evidence_reads = [call for call in reader.call_args_list
+                                  if call.args == (note,) and call.kwargs.get("include_raw")]
+                self.assertEqual(len(evidence_reads), 1)
+            self.assertEqual(len(rows), 3)
+            self.assertIsNone(rows[unknown["id"]])
+            self.assertEqual(rows[first["id"]], gantt.detail(first["id"])["readiness"])
+            self.assertEqual((rows[first["id"]]["value"], rows[first["id"]]["kind"]), ("0", "estimate"))
+            self.assertEqual(rows[second["id"]]["kind"], "fact")
+        cycle = Cycles(self.root)
+        cycle.close(self.plan, cycle.preview(self.plan)["revision"])
+        self.reading(first, 75, date="2026-11-24")
+        self.assertEqual(gantt.detail(first["id"])["readiness"]["kind"], "fact")
+        board = gantt.view(self.plan)
+        self.assertEqual(next(t for t in board["items"] if t["id"] == first["id"])["readiness"]["value"], "0")
+        self.assertTrue(all(t["hasEstimates"] for t in board["tree"] if t["kind"] in ("objective", "result")))
 
     def test_five_contributions_and_a_shared_task_with_distinct_edge_weights(self):
         tasks = [self.task(f"Серия {i}") for i in range(5)]

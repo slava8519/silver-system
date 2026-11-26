@@ -9,6 +9,67 @@ export const dateLabels = Object.freeze({
   start: "Начало", due: "Согласованный срок", forecast: "Прогноз", completed: "Факт завершения"
 });
 
+export const timelineDates = Object.freeze({
+  start: dateLabels.start, baseline: "Базовая дата плана", due: dateLabels.due,
+  forecast: dateLabels.forecast, completed: dateLabels.completed
+});
+
+// Readiness is a recorded measurement. A completion date and a missing
+// measurement are independent of it, including on a frozen plan.
+export function progressValue(value) {
+  if (typeof value !== "number" && (typeof value !== "string" || !value.trim())) return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 && number <= 100 ? number : null;
+}
+
+export function progressText(value) {
+  const number = progressValue(value);
+  return number === null ? "—" : String(number).replace(".", ",") + "%";
+}
+
+// The chart describes stored dates relative to the selected snapshot. A
+// readiness estimate (even 100%) does not establish completion.
+const terminalStatuses = new Map([
+  ...["done", "completed", "complete", "finished", "завершено", "завершен", "завершена", "выполнено", "выполнен", "выполнена"].map(value => [value, "finished"]),
+  ...["closed", "закрыто", "закрыт", "закрыта"].map(value => [value, "closed"]),
+  ...["canceled", "cancelled", "отмена", "отменено", "отменен", "отменена"].map(value => [value, "cancelled"])
+]);
+
+export function scheduleState(row, asOf) {
+  if (dayOf(row.completed) !== null) return {kind:"completion", text:"Завершение подтверждено"};
+  const raw = typeof row.status === "string" ? row.status.trim() : "";
+  const status = raw.toLowerCase().replaceAll("ё", "е").replace(/^[^\p{L}\p{N}]+/u, "").trim();
+  const terminal = terminalStatuses.get(status);
+  if (terminal) return {kind:terminal, text:"Статус в карточке · " + raw};
+  const forecast = dayOf(row.forecast), due = dayOf(row.due), baseline = dayOf(row.baseline);
+  if (Number.isFinite(asOf)) {
+    const dates = [];
+    if (due !== null && due < asOf) dates.push("срок");
+    if (forecast !== null && forecast < asOf) dates.push("прогноз");
+    if (dates.length) return {kind:"overdue", text:(dates.length === 2 ? "Прошли " : "Прошёл ") + dates.join(" и ") + " · дата завершения не записана"};
+  }
+  if (forecast !== null && (due ?? baseline) !== null && forecast > (due ?? baseline)) {
+    return {kind:"delay", text:"Прогноз позже " + (due !== null ? "согласованного срока" : "базовой даты")};
+  }
+  return {kind:"", text:""};
+}
+
+export function intervalEnd(row) {
+  return [row.due, row.completed, row.forecast, row.baseline].find(value => dayOf(value) !== null);
+}
+
+// Fill the correct portion after clipping, even when the visible window starts
+// halfway through a long task or one-day milestone-adjacent interval.
+export function visibleFill(start, end, window, value) {
+  const number = progressValue(value);
+  const first = dayOf(start), last = dayOf(end);
+  if (number === null || first === null || last === null || first > last) return null;
+  const left = Math.max(first, window.start), right = Math.min(last + 1, window.start + window.size);
+  if (left >= right) return null;
+  const edge = first + (last + 1 - first) * number / 100;
+  return Math.min(100, Math.max(0, (edge - left) / (right - left) * 100));
+}
+
 export function dayOf(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value) || value.startsWith("0000")) return null;
   const time = Date.parse(value + "T00:00:00Z");
@@ -45,7 +106,7 @@ export function fitWindow(rows, today, project) {
     }
   }
   for (const row of rows) {
-    for (const field of Object.keys(dateLabels)) {
+    for (const field of Object.keys(timelineDates)) {
       if (row.kind === "milestone" && field === "start") continue;
       const day = dayOf(row[field]);
       if (day !== null) { first = Math.min(first, day); last = Math.max(last, day); }
@@ -102,14 +163,19 @@ export function plot(row, window) {
 }
 
 export function scheduleMarks(row, window) {
-  const base = plot(row, window);
+  const end = intervalEnd(row);
+  // A baseline from a previous schedule may precede today's start after replanning.
+  // Keep its date marker without drawing an inverted duration.
+  const start = dayOf(row.start);
+  const oldBaseline = start !== null && end !== undefined && end === row.baseline && !row.completed && !row.forecast && !row.due && dayOf(end) < start;
+  const base = plot({...row, due: oldBaseline ? null : end}, window);
   const marks = [];
   if (["range", "start", "invalid"].includes(base.kind)) marks.push(base);
   const outside = new Set();
-  if (base.kind !== "invalid" && Object.keys(dateLabels).some(field => row[field] && dayOf(row[field]) === null)) {
+  if (base.kind !== "invalid" && Object.keys(timelineDates).some(field => row[field] && dayOf(row[field]) === null)) {
     marks.push({kind: "invalid"});
   }
-  for (const field of ["due", "forecast", "completed"]) {
+  for (const field of ["baseline", "due", "forecast", "completed"]) {
     if (dayOf(row[field]) === null) continue;
     const point = plot({due: row[field]}, window);
     if (point.kind === "due") marks.push({kind: field, at: point.at});

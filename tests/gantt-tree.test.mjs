@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {treeRows, branchDates} from "../second_brain/web/gantt-tree.js";
+import {treeRows, branchDates, kindPrefix} from "../second_brain/web/gantt-tree.js";
 
 test("shared work has one bar; its second branch remains visible after filtering or folding", () => {
   const tree = [{key:"g", kind:"objective", id:"g"}];
@@ -34,4 +34,12 @@ test("another result's parent does not widen the branch schedule", () => {
   assert.equal(rows.find(row => row.key === "parent").reference, true);
   assert.equal(rows.find(row => row.key === "child").reference, false);
   assert.deepEqual(branchDates(rows, ["due"]).get("kr"), {start:"2026-11-28", end:"2026-11-28"});
+});
+
+test("Imported OKR titles remain intact without repeating their kind", () => {
+  assert.equal(kindPrefix("КР", "КР 2.1 · Smoke"), "");
+  assert.equal(kindPrefix("КР", "Ключевой результат 2 — Smoke"), "");
+  assert.equal(kindPrefix("Цель", "Цель 2 · Инфраструктура"), "");
+  assert.equal(kindPrefix("КР", "Критерии для запуска"), "КР");
+  assert.equal(kindPrefix("Цель", "Готовность к сезону"), "Цель");
 });

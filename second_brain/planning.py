@@ -13,7 +13,7 @@ from .cycles import CYCLE_SEAL, closed_metadata, frozen_rows
 
 
 FOLDERS = {"task": "Tasks", "plan": "Plans"}
-TASK_SCALARS = ("project", "task_kind", "start", "forecast", "completed", "gantt_reviewed")
+TASK_SCALARS = ("project", "task_kind", "start", "baseline", "forecast", "completed", "gantt_reviewed")
 _MEMBER = re.compile(r"^\s*[-*+]\s+.+\s+<!-- task-id: ([A-Za-z0-9._~%\-]+) -->\s*$")
 _BEGIN, _END = "<!-- plan-members -->", "<!-- /plan-members -->"
 
@@ -124,7 +124,11 @@ class Planning:
         return {**self._summary(path, record), "project": project,
                 "kind": "milestone" if record.get("task_kind") == "milestone" else "task",
                 "direction": record.get("direction") or directions.get(project),
+                **({"status": record["status"], "statusLine": record["field_lines"]["status"]}
+                   if record.get("status") else {}),
                 "start": record.get("start"), "startLine": record["field_lines"].get("start"),
+                **({"baseline": record["baseline"], "baselineLine": record["field_lines"]["baseline"]}
+                   if record.get("baseline") else {}),
                 "due": record.get("due"), "dueLine": record["field_lines"].get("due"),
                 "forecast": record.get("forecast"), "forecastLine": record["field_lines"].get("forecast"),
                 "completed": record.get("completed"), "completedLine": record["field_lines"].get("completed")}
@@ -145,7 +149,8 @@ class Planning:
         result = self._summary(path, record)
         if closed is None:
             return {**result, "status": "active", "closedAt": None}
-        return {**result, "title": closed["title"], "status": "closed", "closedAt": closed["closedAt"]}
+        return {**result, "title": closed["title"], "status": "closed", "closedAt": closed["closedAt"],
+                **({"archiveDates": closed["archiveDates"]} if "archiveDates" in closed else {})}
 
     def card_paths(self):
         for kind in FOLDERS:
@@ -182,7 +187,7 @@ class Planning:
             return self._view(path, plan)
 
     def _view(self, path, plan, *, validate_dates=False, linked_task_ids=None,
-              tasks_by_id=None, project_directions=None):
+              tasks_by_id=None, project_directions=None, include_readiness=False):
         from .plan_tree import check_parents, parent_links
         closed = closed_metadata(plan)
         result = self._plan_summary(path, plan, closed)
@@ -208,17 +213,22 @@ class Planning:
         if directions is None:
             directions = self._project_directions(record for _, record, _ in selected.values())
         items = []
+        sources = {}
         for identifier in ids:
             if identifier in selected:
                 member_path, record, header = selected[identifier]
                 if validate_dates:
                     from .schedule import _current_field
-                    for field in ("start", "due", "forecast", "completed"):
+                    for field in ("start", "baseline", "due", "forecast", "completed"):
                         try:
                             _current_field(record, header, field)
                         except ValueError as error:
                             raise ValueError(f"Проверьте {field} в {member_path.relative_to(self.root)}. {error}") from error
-                items.append(self._task_summary(member_path, record, directions))
+                task = self._task_summary(member_path, record, directions)
+                if include_readiness:
+                    from .okr_progress import current_readiness
+                    task["readiness"] = current_readiness(self.root, record, sources=sources)
+                items.append(task)
             else:
                 items.append({"id": identifier, "type": "task", "kind": None, "missing": True, "title": None, "path": None,
                               "revision": None, "project": None, "direction": None, "start": None, "startLine": None,

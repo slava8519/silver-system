@@ -1,9 +1,9 @@
-import {calendarYear, dateLabels, dateText, dayOf, fitWindow, isoDay, scheduleMarks, shortDay, ticks, todayDay, windowTitle} from "./gantt-axis.js";
+import {calendarYear, dateText, dayOf, fitWindow, intervalEnd, isoDay, progressText, progressValue, scheduleMarks, scheduleState, shortDay, ticks, timelineDates, todayDay, visibleFill, windowTitle} from "./gantt-axis.js";
 import {cardLinks, taskInspector} from "./gantt-detail.js";
 import {newWorkForm} from "./gantt-dependencies.js";
-import {closedDay, closedStamp, cyclePreview, snapshotInspector} from "./gantt-cycle.js";
+import {archiveStamp, closedDay, closedStamp, cyclePreview, snapshotInspector} from "./gantt-cycle.js";
 
-import {branchDates, treeRows} from "./gantt-tree.js";
+import {branchDates, kindPrefix, treeRows} from "./gantt-tree.js";
 import {okrLink, openOKR} from "./gantt-okr.js";
 import {activityCatalog} from "./project-activity.js";
 import {planProjects} from "./project-participation.js";
@@ -36,8 +36,10 @@ export function planningView(ui) {
     const {name: vault, root} = catalog || initial;
     let plan = initial, selected = selectedId, detail = null, inspector = null;
     const closed = !projectView && plan.status === "closed";
-    const today = closed ? closedDay(plan.closedAt) : todayDay();
-    const cursorLabel = closed ? "Закрытие" : "Сегодня";
+    const archive = closed ? archiveStamp(plan) : null;
+    const today = archive?.date ? dayOf(archive.date) : closed ? closedDay(plan.closedAt) : todayDay();
+    const statusDay = closed && !archive?.date && (archive || !plan.closedAt) ? null : today;
+    const cursorLabel = archive?.label || (closed ? "Закрытие" : "Сегодня");
     let grouping = projectView ? "none" : (plan.objectives?.length || plan.items.some(row => row.parentId)) ? "tree" : "direction";
     const fit = () => fitWindow(plan.items, today, plan.project);
     let period = fit(), mode = "chart", refreshVersion = 0;
@@ -110,8 +112,8 @@ export function planningView(ui) {
     const cycleStatus = closed ? node("div", "cycle-heading-status") : null;
     function showCycleLinks() {
       const openNote = cardLinks(ui, root);
-      const stamp = node("time", "cycle-stamp", "Цикл закрыт · " + closedStamp(plan.closedAt));
-      stamp.dateTime = plan.closedAt;
+      const stamp = node("time", "cycle-stamp", archive?.text || "Цикл закрыт · " + closedStamp(plan.closedAt));
+      stamp.dateTime = archive?.date || plan.closedAt;
       cycleStatus.replaceChildren(stamp, openNote("Снимок в Obsidian ↗", plan.path));
       for (const issue of plan.weeklyReviews || []) {
         cycleStatus.append(openNote(issue.title + " ↗", issue.path));
@@ -184,7 +186,7 @@ export function planningView(ui) {
       if (!inspector?.editing() && !createPlace.firstChild && !dragging && !document.hidden) refresh().catch(report);
     }
     window.addEventListener("focus", onFocus, {signal: life.signal});
-    async function choose(id, proposal) {
+    async function choose(id, proposal, keepFocus = false) {
       if (createPlace.firstChild) { discard(); return; }
       const wasEditing = inspector?.editing();
       if (wasEditing && (id !== selected || proposal) && !discard()) return;
@@ -201,7 +203,7 @@ export function planningView(ui) {
         if (proposal) inspector.dateForm(proposal);
         else if (!id && previous) {
           [...stage.querySelectorAll("tr[data-task]")].find(tr => tr.dataset.task === previous)?.querySelector(".gantt-task").focus();
-        } else if (id && window.matchMedia("(max-width: 600px)").matches) {
+        } else if (id && !keepFocus && window.matchMedia("(max-width: 600px)").matches) {
           detailPlace.querySelector("h2")?.focus({preventScroll: true});
           detailPlace.scrollIntoView({block: "start"});
         }
@@ -234,7 +236,7 @@ export function planningView(ui) {
       function point(id, finish) {
         const tr = rows.get(id);
         if (!tr) return null;
-        const fields = finish || tr.classList.contains("gantt-milestone") ? ["completed", "forecast", "due"] : ["start", "range"];
+        const fields = finish || tr.classList.contains("gantt-milestone") ? ["completed", "forecast", "due", "baseline"] : ["start", "range"];
         for (const field of fields) {
           const mark = tr.querySelector(".gantt-" + field);
           if (!mark || mark.classList.contains("cut-start")) continue;
@@ -312,10 +314,11 @@ export function planningView(ui) {
         for (const goal of plan.objectives) {
           const group = node("optgroup");
           group.label = goal.title;
-          group.append(option(goal.id, "Цель · " + goal.title));
+          const scopeName = (kind, title) => [kindPrefix(kind, title), title].filter(Boolean).join(" · ");
+          group.append(option(goal.id, scopeName("Цель", goal.title)));
           const goalTasks = new Set();
           for (const kr of goal.results) {
-            group.append(option(kr.id, "КР · " + kr.title));
+            group.append(option(kr.id, scopeName("КР", kr.title)));
             for (const id of kr.taskIds) { linked.add(id); goalTasks.add(id); }
             if (scope === kr.id) included = new Set(kr.taskIds);
           }
@@ -376,7 +379,7 @@ export function planningView(ui) {
         };
         calendarTools.append(zoom,
           travel("‹", "Предыдущее окно", "prev", () => shift(-1)),
-          travel(cursorLabel, closed ? "Показать дату закрытия" : "Показать сегодня", "today", () => {
+          travel(cursorLabel, archive ? "Показать дату архивной записи" : closed ? "Показать дату закрытия" : "Показать сегодня", "today", () => {
             if (period.zoom === "year") { period = calendarYear(today); return; }
             const size = period.zoom ? period.size : 14;
             period = {start: today - Math.floor(size / 2), size, zoom: String(size)};
@@ -387,9 +390,13 @@ export function planningView(ui) {
       board.tabIndex = 0;
       board.setAttribute("role", "region"); board.setAttribute("aria-label", projectView ? "Работы проекта" : "Задачи плана");
       const table = node("table", mode === "chart" ? "gantt-grid" : "gantt-list-grid");
+      const caption = node("caption", "okr-sr", "Готовность работ и календарные даты. Оценочные значения отмечены знаком приблизительного равенства.");
+      table.append(caption);
       const head = table.createTHead().insertRow();
       const th = title => { const cell = node("th", "", title); cell.scope = "col"; return cell; };
-      head.append(th("Работа"));
+      const percentHead = th("Готовность");
+      percentHead.className = "gantt-percent";
+      head.append(th("Работа"), percentHead);
       const scaleTicks = ticks(period);
       const todayOnScale = (today - period.start + .5) / period.size;
       if (mode === "chart") {
@@ -426,7 +433,7 @@ export function planningView(ui) {
           mark.title = dateText(isoDay(tick.day)); scale.append(mark);
         }
         axis.append(scale); head.append(axis);
-      } else head.append(...Object.values(dateLabels).map(th));
+      } else head.append(...Object.values(timelineDates).map(th));
       const body = table.createTBody();
       function toggleButton(key, label, className = "gantt-fold") {
         const open = !folded.has(key);
@@ -441,41 +448,70 @@ export function planningView(ui) {
         toggle.append(node("span", "gantt-disclosure", open ? "▾" : "▸"));
         return toggle;
       }
-      function groupRow(key, label, depth, caption, meta = "", span = null, expandable = true) {
+      function percentage(tr, value, estimated, context = "") {
+        const cell = tr.insertCell();
+        cell.className = "gantt-percent";
+        const known = progressValue(value) !== null;
+        const text = known ? (estimated ? "≈" : "") + progressText(value) : "—";
+        const descriptor = known ? (estimated ? "Оценка готовности" : "Готовность") + " " + progressText(value) : "Готовность не записана";
+        cell.textContent = text;
+        cell.title = descriptor + (context ? " · " + context : "");
+        cell.setAttribute("aria-label", cell.title);
+        return cell;
+      }
+      function progressBand(className, left, right, start, end, value) {
+        const band = node("span", "gantt-mark " + className);
+        band.style.left = left * 100 + "%";
+        band.style.width = (right - left) * 100 + "%";
+        const filled = visibleFill(start, end, period, value);
+        if (filled === null) band.classList.add("is-unknown");
+        else {
+          const fill = node("span", "gantt-fill");
+          fill.style.width = filled + "%";
+          band.append(fill);
+        }
+        return band;
+      }
+      function groupRow(key, label, depth, caption, meta = "", span = null, expandable = true, value, estimated) {
         const tr = body.insertRow();
         tr.className = "gantt-group";
         const fold = expandable ? toggleButton(key, label) : node("span", "gantt-fold");
-        if (depth) fold.style.paddingInlineStart = (12 + depth * 14) + "px";
-        if (caption) fold.append(node("span", "gantt-tree-kind", caption));
-        fold.append(node("span", "", label));
+        if (depth) fold.style.setProperty("--depth", Math.min(depth, 6));
+        const prefix = kindPrefix(caption, label);
+        if (prefix) fold.append(node("span", "gantt-tree-kind", prefix));
+        fold.append(node("span", "gantt-group-label", label));
         if (meta) fold.append(node("small", "", meta));
         tr.insertCell().append(fold);
+        percentage(tr, value, estimated);
         const rest = tr.insertCell();
-        rest.colSpan = mode === "chart" ? 1 : Object.keys(dateLabels).length;
+        rest.className = "gantt-cell-track";
+        rest.colSpan = mode === "chart" ? 1 : Object.keys(timelineDates).length;
         if (mode === "chart") {
           const lane = track(true);
           if (span) {
             const start = Math.max(period.start, dayOf(span.start)), end = Math.min(period.start + period.size, dayOf(span.end) + 1);
             lane.title = "Диапазон известных дат работ · " + dateText(span.start) + " — " + dateText(span.end);
             if (end > start) {
-              const band = node("span", "gantt-tree-span");
-              band.style.left = (start - period.start) / period.size * 100 + "%";
-              band.style.width = (end - start) / period.size * 100 + "%";
-              lane.append(band);
+              lane.append(progressBand("gantt-tree-span", (start - period.start) / period.size,
+                (end - period.start) / period.size, span.start, span.end, value));
             }
           }
+          if (!span && caption) lane.append(node("span", "gantt-mark gantt-undated", "Без дат"));
           rest.append(lane);
+        } else if (span) {
+          rest.textContent = dateText(span.start) + " — " + dateText(span.end);
+          rest.title = "Диапазон известных дат работ";
         }
       }
       if (grouping === "tree") {
         const entries = treeRows(plan, scope, folded);
         const all = treeRows(plan, scope, new Set());
-        const spans = branchDates(all, Object.keys(dateLabels));
+        const spans = branchDates(all, Object.keys(timelineDates));
         scopeRows = [...new Map(all.filter(e => e.row && !e.contextOnly).map(e => [e.id, e.row])).values()];
         for (const entry of entries) {
           if (entry.row) taskRow(entry.row, entry);
           else groupRow(entry.key, entry.title, entry.level, {objective:"Цель", result:"КР"}[entry.kind],
-                        entry.readiness != null ? entry.readiness.replace(".", ",") + "%" : "", spans.get(entry.key), entry.expandable);
+                        "", spans.get(entry.key), entry.expandable, entry.readiness, entry.hasEstimates);
         }
       } else {
         const groups = new Map();
@@ -499,27 +535,29 @@ export function planningView(ui) {
         const title = tr.insertCell(); title.className = "gantt-row-name";
         if (row.missing && !closed) {
           title.append(node("span", "gantt-missing", "Карточка недоступна"));
-          tr.insertCell().colSpan = mode === "chart" ? 1 : Object.keys(dateLabels).length;
+          percentage(tr, null);
+          tr.insertCell().colSpan = mode === "chart" ? 1 : Object.keys(timelineDates).length;
           return;
         }
         if (entry) {
-          title.style.paddingInlineStart = Math.min(entry.level, 10) * 12 + "px";
+          title.style.setProperty("--depth", Math.min(entry.level, 6));
           if (entry.expandable) title.append(toggleButton(entry.key, row.title, "gantt-tree-toggle"));
           if (entry.reference) {
             const ref = button("↗ " + (row.title || row.id), "gantt-tree-reference", () => choose(row.id));
             ref.title = "Открыть общую работу";
             title.append(ref);
+            percentage(tr, row.readiness?.value, row.readiness?.kind === "estimate");
             const cell = tr.insertCell();
-            cell.colSpan = mode === "chart" ? 1 : Object.keys(dateLabels).length;
+            cell.className = "gantt-reference-context";
+            cell.colSpan = mode === "chart" ? 1 : Object.keys(timelineDates).length;
             cell.append(node("small", "gantt-context", entry.contextOnly ? "Родительская работа" : "Общая работа"));
             return;
           }
         }
         tr.dataset.task = row.id;
         const task = button(row.title || row.id, "gantt-task", () => choose(row.id));
-        if (entry?.resultId && entry.linkedToResult === false) {
-          task.append(node("small", "gantt-tree-unlinked", "Без связи с КР"));
-        }
+        const dependent = entry?.resultId && entry.linkedToResult === false;
+        if (dependent) task.title = "Подработа в этой ветви. Её готовность не входит в расчёт КР.";
         if (row.missing) task.append(node("small", "gantt-missing", "Карточка была недоступна"));
         if (row.kind === "milestone") {
           tr.classList.add("gantt-milestone");
@@ -531,24 +569,29 @@ export function planningView(ui) {
           if (event.key === "ArrowDown") next = allRows[i + 1];
           else if (event.key === "ArrowUp") next = allRows[i - 1];
           else return;
-          event.preventDefault(); next?.focus(); if (next) next.click();
+          event.preventDefault(); next?.focus(); if (next) choose(next.closest("tr").dataset.task, undefined, true);
         });
         title.append(task);
+        const measured = row.readiness?.value;
+        const state = scheduleState(row, statusDay);
+        if (state.kind) tr.classList.add("has-" + state.kind);
+        const progress = percentage(tr, measured, row.readiness?.kind === "estimate", state.text);
         if (mode === "list") {
-          for (const field of Object.keys(dateLabels)) tr.insertCell().textContent = row[field] ? dateText(row[field]) : "—";
+          for (const field of Object.keys(timelineDates)) tr.insertCell().textContent = row[field] ? dateText(row[field]) : "—";
         } else {
           const lane = track(false);
-          const schedule = Object.entries(dateLabels).filter(([field]) => row[field])
+          const schedule = Object.entries(timelineDates).filter(([field]) => row[field])
             .map(([field, label]) => label + " " + dateText(row[field])).join(" · ");
-          task.setAttribute("aria-label", (row.kind === "milestone" ? "Веха. " : "") + (row.title || row.id) + ". " + (schedule || "Без дат"));
-          lane.title = schedule || "Без дат";
+          task.setAttribute("aria-label", (row.kind === "milestone" ? "Веха. " : "") + (row.title || row.id) + ". " + progress.title + ". " + (schedule || "Без дат"));
+          lane.title = [progress.title, schedule || "Без дат"].join(" · ");
           const signs = {earlier: "← Раньше", later: "Позже →", outside: "За пределами окна", undated: "Без дат", invalid: "Проверить даты"};
           for (const mark of scheduleMarks(row, period)) {
-            const symbol = node("span", "gantt-mark gantt-" + mark.kind, signs[mark.kind]);
+            const symbol = mark.kind === "range"
+              ? progressBand("gantt-range", mark.at, mark.end, row.start, intervalEnd(row), measured)
+              : node("span", "gantt-mark gantt-" + mark.kind, signs[mark.kind]);
             if (mark.at !== undefined) symbol.style.left = mark.at * 100 + "%";
-            if (dateLabels[mark.kind]) symbol.title = dateLabels[mark.kind] + " · " + dateText(row[mark.kind]);
+            if (timelineDates[mark.kind]) symbol.title = timelineDates[mark.kind] + " · " + dateText(row[mark.kind]);
             if (mark.kind === "range") {
-              symbol.style.width = (mark.end - mark.at) * 100 + "%";
               symbol.classList.toggle("cut-start", mark.before); symbol.classList.toggle("cut-end", mark.after);
             }
             lane.append(symbol);
@@ -560,7 +603,9 @@ export function planningView(ui) {
               lane.append(grip);
             }
           }
-          tr.insertCell().append(lane);
+          const cell = tr.insertCell();
+          cell.className = "gantt-cell-track";
+          cell.append(lane);
         }
         tr.addEventListener("click", event => { if (!event.target.closest("button,.gantt-grip")) choose(row.id); });
       }
@@ -595,7 +640,7 @@ export function planningView(ui) {
           const proposed = dayOf(row[field]) + offset;
           if (proposed < dayOf("0001-01-01") || proposed > dayOf("9999-12-31")) return;
           newDate = isoDay(proposed);
-          tip.textContent = dateLabels[field] + " · " + dateText(newDate); lane.append(tip);
+          tip.textContent = timelineDates[field] + " · " + dateText(newDate); lane.append(tip);
         }
         function finish(e) {
           dragging = false;
@@ -615,12 +660,25 @@ export function planningView(ui) {
       if (!scopeRows.length) board.append(node("p", "gantt-empty", scope ? "В выбранной группе пока нет работ." : projectView ? "В проекте пока нет работ." : "В этом плане пока нет задач."));
       const legend = node("div", "gantt-legend");
       if (mode === "chart") {
-        const markers = [["range", "Плановый период"], ...Object.entries(dateLabels), ["now", cursorLabel + " · " + shortDay(today)]];
+        const markers = [["range", "Интервал и готовность"], ["unknown", "Готовность не указана"]];
+        if (body.querySelector(".has-completion, .has-finished")) markers.push(["finished", "✓ Завершено"]);
+        if (body.querySelector(".has-closed, .has-cancelled")) markers.push(["terminal", "× Закрыто или отменено"]);
+        if (body.querySelector(".has-overdue")) markers.push(["overdue", "! Дата прошла, завершение не записано"]);
+        if (body.querySelector(".has-delay")) markers.push(["delay", "↗ Прогноз позже срока или базы"]);
+        for (const [key, label] of Object.entries(timelineDates)) {
+          if (scopeRows.some(row => dayOf(row[key]) !== null)) markers.push([key, label]);
+        }
+        markers.push(["now", cursorLabel + " · " + shortDay(today)]);
         if (dayOf(plan.project?.due) !== null) markers.push(["project-deadline", "Срок проекта · " + dateText(plan.project.due)]);
         for (const [key, label] of markers) {
           const entry = node("span", "gantt-legend-item");
           entry.append(node("i", "legend-" + key), node("span", "", label)); legend.append(entry);
         }
+      }
+      const overall = progressValue(plan.progress?.value);
+      if (overall !== null) {
+        const total = node("span", "gantt-total", "Готовность плана · " + (plan.progress.hasEstimates ? "≈" : "") + progressText(overall));
+        controls.prepend(total);
       }
       stage.replaceChildren(controls, board, legend);
       markSelection();
@@ -690,10 +748,10 @@ export function planningView(ui) {
           "Выберите строку, чтобы открыть сводку и события."));
         const nearest = rows.filter(r => !r.completed && r.due && dayOf(r.due) >= today).sort((a, b) => a.due.localeCompare(b.due))[0];
         const next = node("div");
-        next.append(node("h3", "", closed ? "Ближайший срок на дату закрытия" : "Ближайший согласованный срок"));
+        next.append(node("h3", "", archive ? "Ближайший срок на дату архивной записи" : closed ? "Ближайший срок на дату закрытия" : "Ближайший согласованный срок"));
         if (nearest) next.append(button(nearest.title, "gantt-action", () => choose(nearest.id)), node("small", "", dateText(nearest.due)));
         else next.append(node("p", "gantt-empty", "Предстоящие сроки не указаны."));
-        const undated = rows.filter(r => Object.keys(dateLabels).every(field => !r[field]));
+        const undated = rows.filter(r => Object.keys(timelineDates).every(field => !r[field]));
         const open = node("div"); open.append(node("h3", "", "Без дат"));
         if (undated.length) {
           for (const row of undated) open.append(button(row.title, "gantt-action", () => choose(row.id)));

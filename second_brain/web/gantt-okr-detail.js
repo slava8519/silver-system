@@ -1,3 +1,4 @@
+import {archiveStamp} from "./gantt-cycle.js";
 import {dateText} from "./gantt-axis.js";
 import {cardLinks} from "./gantt-detail.js";
 import {assignmentEditor, linkEditor, taskScope} from "./gantt-okr-forms.js";
@@ -194,7 +195,7 @@ export async function cardPage(ui, view, id, planId, planURL) {
     const criteria = criteriaPanel(ui,card,historical,load);
     const initiatives = initiativesPanel(ui,card,rows,plan,historical,options,planURL,load);
     view.replaceChildren(nav,header,status);
-    if (historical) view.append(node("p","cycle-stamp","Снимок на момент закрытия · " + dateText(plan.closedAt.slice(0,10))));
+    if (historical) view.append(node("p","cycle-stamp",archiveStamp(plan)?.text || "Снимок на момент закрытия · " + dateText(plan.closedAt.slice(0,10))));
     if (overview.children.length) view.append(overview);
     view.append(criteria,initiatives);
     if (card.contextProjects?.length) {

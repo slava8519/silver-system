@@ -220,15 +220,18 @@ class Gantt:
         outline = [{"id": goal["id"], "title": goal["title"],
                     "results": [{k: kr[k] for k in ("id", "title", "taskIds")} for kr in goal["results"]]}
                    for goal in board["objectives"]]
-        return {**board["plan"], "items": board["items"], "objectives": outline, "tree": plan_outline(board)}
+        return {**board["plan"], "items": board["items"], "objectives": outline, "tree": plan_outline(board),
+                "progress": board.get("progress")}
 
     def detail(self, task_id, *, all_entries=False):
         path, _, record, _ = self.planning._find("task", task_id)
         return self._detail(path, record, all_entries=all_entries)
 
     def _detail(self, path, record, *, all_entries=False):
+        from .okr_progress import current_readiness
         dates = schedule_history(record, path.relative_to(self.root).as_posix())
         return {**self.planning._task_summary(path, record, self.planning._project_directions([record])),
+                "readiness": current_readiness(self.root, record),
                 "scheduleHistory": dates[-8:][::-1], "scheduleHistoryTotal": len(dates),
                 **_row_fields(record, all_entries=all_entries)}
 

@@ -1,3 +1,4 @@
+import {archiveStamp} from "./gantt-cycle.js";
 import {dateText, dayOf} from "./gantt-axis.js";
 import {cardLinks} from "./gantt-detail.js";
 import {planEditor} from "./gantt-okr-forms.js";
@@ -163,7 +164,7 @@ export async function activityCatalog(ui, view, defaultScope = "all") {
   function planItem(row) {
     const okr = hasOKR(row);
     const {item,body,actions} = itemNode(row.title,scope === "okr" ? boardURL(row.id) : planURL(row.id));
-    if (row.status === "closed") body.append(facts("Закрыт" + (row.closedAt ? " · " + dateText(row.closedAt.slice(0,10)) : "")));
+    if (row.status === "closed") body.append(facts(archiveStamp(row)?.text || "Закрыт" + (row.closedAt ? " · " + dateText(row.closedAt.slice(0,10)) : "")));
     body.append(facts(workCount(row.taskCount),row.completedCount ? "завершено " + row.completedCount : "",
       okr ? counted(row.objectiveCount,["цель","цели","целей"]) + " · " + row.resultCount + " КР" : ""));
     const span = spanOf(row);

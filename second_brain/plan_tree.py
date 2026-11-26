@@ -134,10 +134,12 @@ def outline(board):
         goal_key = "objective/" + goal["id"]
         append(goal_key, "objective", goal["id"], goal["title"])
         entries[-1]["readiness"] = (goal.get("progress") or {}).get("value")
+        entries[-1]["hasEstimates"] = (goal.get("progress") or {}).get("hasEstimates")
         for kr in goal["results"]:
             key = "result/" + kr["id"]
             append(key, "result", kr["id"], kr["title"], goal_key, 1, kr["id"])
             entries[-1]["readiness"] = (kr.get("progress") or {}).get("value")
+            entries[-1]["hasEstimates"] = (kr.get("progress") or {}).get("hasEstimates")
             tasks(kr["id"], key, 2)
     if branches.get(None):
         if goals:

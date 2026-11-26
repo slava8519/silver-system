@@ -1,5 +1,10 @@
 import {dayOf} from "./gantt-axis.js";
 
+export function kindPrefix(kind, title) {
+  const head = kind === "КР" ? /^(?:кр|ключевой результат)(?=$|[\s.·:—–№\d-])/iu : /^цель(?=$|[\s.·:—–№\d-])/iu;
+  return kind && !head.test(title.trim()) ? kind : "";
+}
+
 // Keep all relationships visible. A shared task gets a single editable bar.
 export function treeRows(plan, scope, folded) {
   const tree = plan.tree || [];

@@ -22,6 +22,17 @@ class PlanningCLI(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
+    def test_gantt_row_shows_a_recorded_zero_and_its_origin(self):
+        task = self.cli("task-create", "Проверка расписания", "--request-id", "schedule-check")
+        identifier = task["id"]
+        row = self.cli("gantt-row", identifier)
+        self.assertIsNone(row["readiness"])
+        self.cli("task-readiness", identifier, "--value", "0", "--kind", "estimate", "--actor", "manual",
+                 "--owner-confirmed", "--reason", "Работы ещё не начались", "--date", "2026-08-25",
+                 "--revision", row["revision"])
+        reading = self.cli("gantt-row", identifier)["readiness"]
+        self.assertEqual((reading["value"], reading["kind"], reading["date"]), ("0", "estimate", "2026-08-25"))
+
     def test_transfer_through_two_views_and_replay(self):
         direction = self.cli("create", "direction", "Музыка")
         project = self.cli("create", "project", "Осенний концерт", "--alias", "Сцена", "--direction", direction["id"])

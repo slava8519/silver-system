@@ -170,7 +170,7 @@ class ProjectActivity:
                 if link["id"] in projects:
                     counts = {k: link[k] for k in ("explicitlyIncluded", "taskCount", "okrTaskCount", "contextResultCount")}
                     projects[link["id"]]["plans"].append(
-                        {k: plan[k] for k in ("id", "title", "status", "closedAt")} | counts)
+                        {k: plan[k] for k in ("id", "title", "status", "closedAt", "archiveDates") if k in plan} | counts)
             summaries.append(plan)
 
         for key, project in projects.items():

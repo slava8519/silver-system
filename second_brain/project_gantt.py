@@ -1,7 +1,7 @@
 """A live timeline of the work explicitly assigned to one project."""
 
 from . import dependencies, storage
-from .okr_progress import _task_readings
+from .okr_progress import current_readiness
 from .planning import Planning
 from .workspace import Workspace
 
@@ -35,14 +35,15 @@ class ProjectGantt:
                 if record.get("project") == project_id:
                     selected.append((path, record))
             directions = {project_id: project["direction"]}
+            sources = {}
             for path, record in selected:
                 row = self.planning._task_summary(path, record, directions)
                 row.update(projectLine=record["field_lines"].get("project"),
                            status=record.get("status"), statusLine=record["field_lines"].get("status"),
+                           readiness=current_readiness(self.root, record, sources=sources),
                            predecessors=self._predecessors(row, record, cards))
                 view["items"].append(row)
             self.planning._group_titles(view)
-            _task_readings(self.root, view["items"])
             return view
 
     def _predecessors(self, row, record, cards):

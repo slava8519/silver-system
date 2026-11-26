@@ -87,16 +87,22 @@ def _readings(record):
     return sorted(rows, key=lambda row: row["date"])
 
 
-def _resolve(root, row):
+def _resolve(root, row, *, sources=None):
     if not row:
         return None
     if row["source"] is None:
         return dict(row)
     try:
-        source = evidence.resolve_source(root, row["source"])
+        source = evidence.resolve_source(root, row["source"], records=sources)
     except (ValueError, OSError):
         source = {**row["source"], "unavailable": True}
     return {**row, "source": source}
+
+
+def current_readiness(root, record, *, sources=None):
+    """Read the latest dated entry from this exact task revision, including a recorded zero."""
+    readings = _readings(record)
+    return _resolve(root, readings[-1], sources=sources) if readings else None
 
 
 def _updated_body(record, header, *, heading, index=None, line=None, after=None):
@@ -176,6 +182,7 @@ def _task_readings(root, items):
     from .plan_transaction import previous_versions
 
     pending = previous_versions(root) if items else {}
+    sources = {}  # Share one revision of each evidence file within this board read.
     tasks = {}
     for task in items:
         reading = None
@@ -193,8 +200,7 @@ def _task_readings(root, items):
                 record, _ = storage._parse_record(path, payload, kinds=("task",))
                 if record["id"] != task["id"]:
                     raise storage.ConflictError("Карточка задачи была заменена. Откройте результат ещё раз.")
-                rows = _readings(record)
-                reading = _resolve(root, rows[-1]) if rows else None
+                reading = current_readiness(root, record, sources=sources)
         task["readiness"] = reading
         tasks[task["id"]] = reading
     return tasks
@@ -237,7 +243,10 @@ def enrich_frozen_contributions(items, structure):
 
 def enrich_board(root, view, structure):
     """Add one readiness per physical task and compute the two levels of edges once."""
-    readings = _task_readings(root, view["items"])
+    missing = [task for task in view["items"] if "readiness" not in task]
+    if missing:
+        _task_readings(root, missing)
+    readings = {task["id"]: task["readiness"] for task in view["items"]}
     for goal in structure["objectives"]:
         results = goal["results"]
         for result in results:

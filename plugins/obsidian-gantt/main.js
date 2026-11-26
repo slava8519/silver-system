@@ -1,4 +1,4 @@
-const { ItemView, Notice, Plugin, PluginSettingTab, Setting, TFile } = require('obsidian');
+const { ItemView, Notice, Plugin, PluginSettingTab, Setting, TFile, resolveSubpath } = require('obsidian');
 const { shell } = require('electron');
 const path = require('path');
 
@@ -51,7 +51,7 @@ class AdminView extends ItemView {
     await this.connect();
   }
 
-  async openSource({ path, line }) {
+  async openSource({ path, line, subpath }) {
     if (typeof path !== 'string' || path.includes('\\') ||
         path.split('/').some(part => !part || part.startsWith('.'))) return;
     const file = this.app.vault.getAbstractFileByPath(path);
@@ -59,7 +59,15 @@ class AdminView extends ItemView {
       new Notice('Исходная запись больше не доступна по этому пути.');
       return;
     }
-    const state = Number.isSafeInteger(line) && line >= 1 ? { eState: { line: line - 1 } } : {};
+    let target = Number.isSafeInteger(line) && line >= 1 ? line - 1 : null;
+    if (subpath) {
+      if (typeof subpath !== 'string' || !/^#[^\u0000-\u001f\u007f]+$/.test(subpath)) return;
+      const cache = this.app.metadataCache.getFileCache(file);
+      const section = cache && resolveSubpath(cache, subpath);
+      if (section) target = section.start.line;
+      else new Notice('Раздел больше не доступен. Открыта карточка.');
+    }
+    const state = target == null ? {} : { eState: { line: target } };
     const { workspace } = this.app;
     const existing = workspace.getLeavesOfType('markdown').find(leaf => leaf.getViewState().state?.file === path);
     const leaf = existing || workspace.getLeaf('tab');

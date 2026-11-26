@@ -276,7 +276,8 @@ class KeyResults:
                 linked.update(dict.fromkeys(ids))
                 if not ids:
                     empty_results.append(result["id"])
-        view = self.planning._view(path, plan, validate_dates=validate_dates, linked_task_ids=linked)
+        view = self.planning._view(path, plan, validate_dates=validate_dates, linked_task_ids=linked,
+                                   include_readiness=True)
         self.planning._group_titles(view)
         items = view["items"]
         gaps = {"unlinkedTaskIds": [t["id"] for t in items if t["id"] not in linked],

@@ -1,6 +1,7 @@
 import {openObsidianSource} from "./obsidian-workspace.js";
 import {dateLabels, dateText, dayOf, isoDay, todayDay} from "./gantt-axis.js";
 import {dependencySection, scenarioForm} from "./gantt-dependencies.js";
+import {inspectorText, readinessText} from "./gantt-detail-text.js";
 
 function authorText(entry) {
   if (!entry) return "";
@@ -11,14 +12,14 @@ function authorText(entry) {
 }
 
 export function cardLinks(ui, root) {
-  return function markdownLink(name, path, source, line) {
-    const href = "obsidian://open?" + new URLSearchParams({path: root + "/" + path});
+  return function markdownLink(name, path, source, line, subpath) {
+    const href = "obsidian://open?path=" + encodeURIComponent(root + "/" + path + (subpath || ""));
     const a = ui.link(name, href, "text-link");
     if (ui.embedded && window.parent !== window) a.addEventListener("click", async event => {
       event.preventDefault();
       try {
         const ref = source ? await ui.api("citation", {id: source.id, line: source.line, ref: source.ref}) : {path, start: line};
-        openObsidianSource(ref.path, ref.start);
+        openObsidianSource(ref.path, ref.start, subpath);
       } catch (error) { a.after(ui.notice(error.message)); }
     });
     return a;
@@ -42,6 +43,7 @@ export function taskInspector(ui, settings) {
   const scope = [row.directionTitle, row.projectTitle].filter(Boolean).join(" / ");
   if (milestone || scope) identity.append(node("p", "gantt-context", [milestone ? "Веха" : "", scope].filter(Boolean).join(" · ")));
   const markdownLink = cardLinks(ui, root);
+  const prose = (text, style) => inspectorText(ui, style, text, task.path, markdownLink);
   const cardActions = node("div", "work-tools");
   cardActions.append(markdownLink("Открыть карточку в Obsidian ↗", task.path));
   if (!ui.compact) cardActions.append(link("Показать связи", "#map?" + new URLSearchParams({id:task.id}), "text-link"));
@@ -60,10 +62,14 @@ export function taskInspector(ui, settings) {
     const sources = node("div", "gantt-evidence");
     for (const source of entry.sources || []) {
       const details = node("details");
-      details.append(node("summary", "", source.path + " · строка " + source.line));
+      const name = source.path.split("/").pop().replace(/\.md$/i, "");
+      const summary = node("summary", "", name + " · строка " + source.line);
+      summary.title = source.path;
+      details.append(summary);
       if (source.quote) details.append(node("blockquote", "", source.quote));
-      if (embedded) details.append(markdownLink("Открыть строку в Obsidian ↗", source.path, source));
-      if (!embedded && source.href?.startsWith("/") && !source.href.startsWith("//")) {
+      if (source.unavailable) details.append(node("p", "gantt-byline", "Исходная строка недоступна."));
+      else if (embedded) details.append(markdownLink("Открыть строку в Obsidian ↗", source.path, source));
+      else if (/^\/(?:source|original)\//.test(source.href || "") && !source.href.includes("\\")) {
         const a = link("Проверить источник ↗", source.href, "text-link");
         a.target = "_blank";
         a.rel = "noopener";
@@ -75,7 +81,20 @@ export function taskInspector(ui, settings) {
   }
 
   const dates = node("dl", "gantt-facts");
-  for (const [field, label] of Object.entries(dateLabels)) {
+  const state = task.readiness;
+  const readiness = node("dd", "", readinessText(state));
+  if (state?.reason || state?.source) {
+    const basis = node("details", "gantt-schedule-history");
+    basis.append(node("summary", "", "Основание готовности"));
+    if (state.reason) basis.append(prose(state.reason, "gantt-event-text"));
+    if (state.source) basis.append(evidence({sources: [state.source]}));
+    readiness.append(basis);
+  }
+  dates.append(node("dt", "", "Готовность"), readiness);
+  const detailLabels = task.baseline
+    ? {start: dateLabels.start, baseline: "Базовая дата плана", ...dateLabels}
+    : dateLabels;
+  for (const [field, label] of Object.entries(detailLabels)) {
     if (field === "start" && milestone) continue;
     const value = node("dd", "", task[field] ? dateText(task[field]) : "Нет даты");
     const day = dayOf(task[field]), due = dayOf(task.due);
@@ -83,6 +102,12 @@ export function taskInspector(ui, settings) {
       const delta = day - due;
       const difference = !delta ? "Совпадает со сроком" : (delta > 0 ? "Позже на " : "Раньше на ") + Math.abs(delta) + " дн.";
       value.append(node("small", "gantt-difference", difference));
+    }
+    const baseline = dayOf(task.baseline);
+    if (field === "forecast" && day !== null && baseline !== null) {
+      const days = day - baseline;
+      const offset = days > 0 ? "+" + days : String(days);
+      value.append(node("small", "gantt-difference", "От базовой даты · " + offset + " дн."));
     }
     dates.append(node("dt", "", label), value);
   }
@@ -95,12 +120,12 @@ export function taskInspector(ui, settings) {
   dateActions.append(editDate);
   if (!task.completed) dateActions.append(scenario);
   identity.append(dates, dateActions);
-  const recorded = ["due", "forecast", "completed"].filter(field => task[field] && task[field + "Line"]);
+  const recorded = ["baseline", "due", "forecast", "completed"].filter(field => task[field] && task[field + "Line"]);
   if (recorded.length || task.scheduleHistory?.length) {
     const basis = node("details", "gantt-schedule-history");
     basis.append(node("summary", "", "Основания дат"));
     for (const field of recorded) {
-      basis.append(node("p", "", dateLabels[field] + " · " + task.path + " · строка " + task[field + "Line"]));
+      basis.append(node("p", "", detailLabels[field] + " · " + task.path + " · строка " + task[field + "Line"]));
     }
     if (task.scheduleHistory?.length) {
       const shown = task.scheduleHistory.length;
@@ -123,7 +148,7 @@ export function taskInspector(ui, settings) {
   briefHead.append(node("h3", "", "Коротко"), button("Изменить", "gantt-action", () => textForm("brief", task.brief)));
   brief.append(briefHead);
   if (task.brief?.text) {
-    brief.append(node("p", "gantt-byline", byline(task.brief)), node("p", "gantt-summary-text", task.brief.text), evidence(task.brief));
+    brief.append(node("p", "gantt-byline", byline(task.brief)), prose(task.brief.text, "gantt-summary-text"), evidence(task.brief));
   } else brief.append(node("p", "gantt-empty", "Краткая сводка пока не записана."));
 
   const latest = node("div", "gantt-pane");
@@ -137,7 +162,7 @@ export function taskInspector(ui, settings) {
     const meta = node("div", "gantt-event-head");
     meta.append(node("strong", "", dateText(item.date)), node("span", "gantt-byline", authorText(item)),
       button("Исправить", "gantt-action", () => textForm("latest", item)));
-    article.append(meta, node("p", "gantt-event-text", item.text), evidence(item));
+    article.append(meta, prose(item.text, "gantt-event-text"), evidence(item));
     return article;
   }
   events.append(...task.latest.map(eventCard));
@@ -248,8 +273,8 @@ export function taskInspector(ui, settings) {
     info.open = true;
     info.append(node("summary", "", "Текущая карточка"),
       node("p", "", Object.entries(dateLabels).map(([field, label]) => label + " · " + dateText(current[field])).join(" / ")),
-      node("p", "", current.brief?.text || "Сводка пока не записана."));
-    for (const entry of current.latest) info.append(node("p", "", dateText(entry.date) + " · " + entry.text));
+      prose(current.brief?.text || "Сводка пока не записана.", "gantt-summary-text"));
+    for (const entry of current.latest) info.append(prose(dateText(entry.date) + " · " + entry.text, "gantt-event-text"));
     feedback.append(info, button("Загрузить текущую карточку", "button button-secondary", () => refresh("Карточка перечитана.")));
   }
 

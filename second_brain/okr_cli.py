@@ -137,7 +137,7 @@ def _board_page(board, args):
                  "measurement": _short_measurement(r["measurement"]), **_assessment(r)} for r in children]
     elif args.view == "tasks":
         fields = ("id", "title", "path", "kind", "project", "projectTitle", "direction", "directionTitle", "missing",
-                  "start", "due", "forecast", "completed", "snapshotLine")
+                  "start", "baseline", "due", "forecast", "completed", "snapshotLine")
         rows = [{k: r[k] for k in fields if k in r} for r in tasks]
     else:
         sources = {"unlinkedTaskIds": tasks, "missingTaskIds": tasks,

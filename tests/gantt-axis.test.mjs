@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {calendarYear, dayOf, fitWindow, isoDay, plot, scheduleMarks, ticks} from "../second_brain/web/gantt-axis.js";
+import {calendarYear, dayOf, fitWindow, intervalEnd, isoDay, plot, progressText, progressValue, scheduleMarks, scheduleState, ticks, visibleFill} from "../second_brain/web/gantt-axis.js";
 
 const november = {start: dayOf("2026-11-01"), size: 30};
 test("annual scale follows calendar months when stepping into and out of a leap year", () => {
@@ -67,4 +67,48 @@ test("A forecast or completion can stand alone and extend the fitted window", ()
   const fitted = fitWindow([row], dayOf("2020-03-08"));
   assert.deepEqual(scheduleMarks(row, fitted).map(mark=>mark.kind), ["forecast","completed"]);
   assert.deepEqual(scheduleMarks({forecast:"2026-02-30"}, november), [{kind:"invalid"}]);
+});
+
+test("Forecast, actual and baseline date produce an interval when no due date is agreed", () => {
+  const row = {start:"2026-11-05", baseline:"2026-11-11", forecast:"2026-11-17", completed:"2026-11-15"};
+  assert.equal(intervalEnd(row),row.completed);
+  const range = scheduleMarks(row, november);
+  assert.deepEqual(range.map(mark => mark.kind), ["range","baseline","forecast","completed"]);
+  assert.equal(range[0].end, 15/30);
+  assert.equal(intervalEnd({...row,completed:null}), row.forecast);
+  assert.equal(intervalEnd({...row,completed:null,forecast:null}), row.baseline);
+  assert.equal(scheduleMarks({start:row.start,forecast:row.forecast},november)[0].end, 17/30);
+  assert.equal(scheduleMarks({start:row.start,baseline:row.baseline},november)[0].end, 11/30);
+  assert.equal(scheduleMarks({start:row.start,completed:row.completed},november)[0].end, 15/30);
+  assert.deepEqual(scheduleMarks({start:"2026-11-19",baseline:"2026-11-10"},november).map(m => m.kind), ["start","baseline"]);
+  assert.equal(scheduleMarks({baseline:"2026-11-10"},november)[0].kind, "baseline");
+});
+
+test("Readiness distinguishes zero and unknown, keeps fractional estimates and clips the filled part", () => {
+  assert.equal(progressText("66.775"),"66,775%");
+  assert.equal(progressText("0"),"0%");
+  for (const value of [null,undefined,"",false,Infinity,-1,"101"]) assert.equal(progressValue(value),null);
+  const zoom={start:dayOf("2026-11-06"),size:10};
+  assert.equal(visibleFill("2026-11-01","2026-11-20",zoom,50),50);
+  assert.equal(visibleFill("2026-11-01","2026-11-20",zoom,25),0);
+  assert.equal(visibleFill("2026-11-01","2026-11-20",zoom,75),100);
+  assert.equal(visibleFill("2026-11-01","2026-11-20",zoom,null),null);
+  assert.equal(visibleFill("2026-11-10","2026-11-10",zoom,100),100);
+});
+
+test("Overdue calendar dates, a future slip, and terminal work have different meanings", () => {
+  const review = dayOf("2026-11-27");
+  const skipped = {baseline:"2026-10-30", forecast:"2026-11-26", readiness:{kind:"estimate",value:"100"}};
+  const postponed = {baseline:"2026-11-06", forecast:"2026-12-02"};
+  assert.equal(scheduleState(skipped,review).kind,"overdue");
+  assert.equal(scheduleState(postponed,review).kind,"delay");
+  assert.equal(scheduleState(skipped,dayOf("2026-11-26")).kind,"delay");
+  assert.equal(scheduleState({due:"2026-11-26",forecast:"2026-12-02"},review).kind,"overdue");
+  assert.equal(scheduleState({baseline:"2026-11-26"},review).kind,"");
+  assert.equal(scheduleState({forecast:"2026-11-26"},null).kind,"");
+  assert.equal(scheduleState({...skipped,completed:"2026-11-24"},review).kind,"completion");
+  assert.equal(scheduleState({...skipped,status:"✅ завершён"},review).kind,"finished");
+  assert.equal(scheduleState({...postponed,status:"Отменено"},review).kind,"cancelled");
+  assert.equal(scheduleState({...skipped,status:"closed"},review).kind,"closed");
+  assert.equal(scheduleState({...skipped,status:"не завершено"},review).kind,"overdue");
 });

@@ -23,8 +23,8 @@ export function workspaceLink(href, current) {
   return localRoute(url);
 }
 
-export function openObsidianSource(path, line) {
-  window.parent.postMessage({type: "second-brain-open-source", path, line}, obsidianOrigin);
+export function openObsidianSource(path, line, subpath) {
+  window.parent.postMessage({type: "second-brain-open-source", path, line, ...(subpath ? {subpath} : {})}, obsidianOrigin);
 }
 
 export function connectObsidianWorkspace(frame) {

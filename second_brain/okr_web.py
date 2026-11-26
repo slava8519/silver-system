@@ -8,8 +8,8 @@ def periods(root):
     """Older HTTP clients use the same plan counts under the original field names."""
     from .project_activity import ProjectActivity
     catalog = ProjectActivity(root).catalog()
-    fields = ("id", "type", "title", "path", "revision", "status", "closedAt", "hierarchyRecorded")
-    rows = [{**{k: plan[k] for k in fields}, "objectives": plan["objectiveCount"], "results": plan["resultCount"]}
+    fields = ("id", "type", "title", "path", "revision", "status", "closedAt", "archiveDates", "hierarchyRecorded")
+    rows = [{**{k: plan[k] for k in fields if k in plan}, "objectives": plan["objectiveCount"], "results": plan["resultCount"]}
             for plan in catalog["plans"]]
     return {"name": catalog["name"], "items": rows}
 

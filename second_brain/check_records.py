@@ -133,7 +133,7 @@ def _body_links(record, path, report):
     if kind == "task":
         for identifier, index in dependencies._section(record)[1].items():
             yield identifier, "task", base + index
-        for key in ("start", "due", "forecast", "completed"):
+        for key in ("start", "baseline", "due", "forecast", "completed"):
             if record.get(key) and storage._iso_date(record[key]) is None:
                 report.add("record.date", path, record["field_lines"][key],
                            f"Укажите существующую календарную дату в поле {key}.")
