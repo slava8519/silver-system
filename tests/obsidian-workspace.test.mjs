@@ -8,7 +8,7 @@ const query = "?embed=workspace&binding=" + binding;
 
 test("bound links retain the current vault across sources, help, pagination and downloads", () => {
   for (const href of ["/about.html#flow", "/#inbox", "/source/n1?line=2&ref=r#cited-line",
-    "/evidence/p1/f1?personal=1", "/original/file?start=31", "/attachment/file"]) {
+    "/evidence/p1/f1?personal=1", "/original/file?start=31", "/attachment/file", "/report-source/issue?index=0#cited-line"]) {
     const dest = new URL(workspaceLink(href, origin + "/" + query + "#people"), origin);
     assert.equal(dest.searchParams.get("embed"), "workspace");
     assert.equal(dest.searchParams.get("binding"), binding);

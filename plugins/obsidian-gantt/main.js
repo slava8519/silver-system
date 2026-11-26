@@ -14,7 +14,7 @@ function browserRoute(route, origin) {
   if (typeof route !== 'string' || !route.startsWith('/') || route.startsWith('//')) return null;
   try {
     const url = new URL(route, origin);
-    if (url.origin !== origin || !/^\/(?:about\.html|source\/[^/]+|evidence\/[^/]+\/[^/]+|original\/[a-f0-9]{64})?$/.test(url.pathname)) return null;
+    if (url.origin !== origin || !/^\/(?:about\.html|(?:source|report-source)\/[^/]+|evidence\/[^/]+\/[^/]+|original\/[a-f0-9]{64})?$/.test(url.pathname)) return null;
     url.searchParams.delete('embed');
     url.searchParams.delete('binding');
     return url.pathname + url.search + url.hash;

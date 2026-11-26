@@ -17,7 +17,7 @@ export function workspaceLink(href, current) {
   const page = new URL(current);
   if (page.searchParams.get("embed") !== "workspace") return href;
   const url = new URL(href, page);
-  if (url.origin !== page.origin || !/^\/(?:$|about\.html$|(?:source|evidence|original|attachment)\/)/.test(url.pathname)) return href;
+  if (url.origin !== page.origin || !/^\/(?:$|about\.html$|(?:source|report-source|evidence|original|attachment)\/)/.test(url.pathname)) return href;
   url.searchParams.set("embed", "workspace");
   url.searchParams.set("binding", page.searchParams.get("binding") || "");
   return localRoute(url);

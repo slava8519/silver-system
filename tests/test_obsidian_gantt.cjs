@@ -120,15 +120,18 @@ test('browser action passes through the current section or source, stripping ifr
   route('/#overview', { origin: 'http://127.0.0.1:8770' });
   for (const invalid of ['//example.org/', 'https://example.org/', '/api/work/stop', '/\\evil.test/']) route(invalid);
   await v.openBrowser();
+  route('/report-source/issue?index=0&embed=workspace&binding=secret#cited-line');
+  await v.openBrowser();
   route('/about.html#system-map');
   await v.openBrowser();
   assert.deepEqual(f.external, [
-    origin + '/#map?id=123&group=plans', origin + '/source/note?ref=a&line=17', origin + '/about.html#system-map'
+    origin + '/#map?id=123&group=plans', origin + '/source/note?ref=a&line=17',
+    origin + '/report-source/issue?index=0#cited-line', origin + '/about.html#system-map'
   ]);
   f.state({ state: 'conflict', origin, message: 'На порту другое хранилище.' });
   await v.openBrowser();
   assert.equal(v.frame, null);
-  assert.equal(f.external.length, 3);
+  assert.equal(f.external.length, 4);
 });
 
 test('only a source message from the bound frame opens a file in the current vault', async () => {

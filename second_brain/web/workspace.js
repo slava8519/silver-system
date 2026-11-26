@@ -8,6 +8,7 @@ import { relationMapHelp } from "./relation-map-help.js";
 import { projectUpdatesPanel } from "./project-updates.js";
 import { mountDirectionStates } from "./direction-states.js";
 import { renderOverviewCommands } from "./overview-commands.js";
+import { reportsView } from "./reports.js";
 
 (() => {
   const main = document.getElementById("content");
@@ -125,6 +126,7 @@ import { renderOverviewCommands } from "./overview-commands.js";
 
   const intake = intakeViews({node, link, button, option, section, labelled, notice, api, go, counted, pageHead, recordURL});
   const planning = planningView({node, link, button, option, labelled, notice, api, go, counted, pageHead, embedded, compact});
+  const reports = reportsView({node, link, button, option, labelled, notice, api, go, counted, pageHead, embedded});
 
   function fieldValue(record, key) {
     const value = record[key];
@@ -470,7 +472,11 @@ import { renderOverviewCommands } from "./overview-commands.js";
     main.classList.toggle("planning-main", isPlan);
     main.setAttribute("aria-busy","true");
     try {
-      if (page === "map-help") {
+      if (page === "reports") {
+        const view = node("div", "reports-view");
+        main.replaceChildren(view);
+        await reports(view, recordId || "issues", params);
+      } else if (page === "map-help") {
         main.replaceChildren(relationMapHelp(params));
       } else if (page === "map") {
         const view = node("div", "relation-map");

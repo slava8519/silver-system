@@ -11,7 +11,7 @@ from pathlib import Path
 import sqlite3
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
-from . import brief, demo_cleanup, storage, work_control
+from . import brief, demo_cleanup, report_web, storage, work_control
 from .batch import Batch
 from .capture import Capture, CaptureTooLarge, MAX_FILE_BYTES, MAX_TEXT_BYTES
 from .inbox import Inbox
@@ -86,7 +86,7 @@ class Handler(BaseHTTPRequestHandler):
         self.mode = "demo" if guide is not None else "work"
         self.reader = guide if guide is not None else self.server.reader
         frame_mode = params.get("embed")
-        document = path in ("/", "/about.html") or path.startswith(("/source/", "/evidence/", "/original/"))
+        document = path in ("/", "/about.html") or path.startswith(("/source/", "/evidence/", "/original/", "/report-source/"))
         self.workspace_embed = not post and frame_mode == "workspace" and (document or path.startswith("/attachment/"))
         compact = not post and self.mode == "work" and path == "/" and frame_mode == "1"
         self.embedded_page = False
@@ -110,7 +110,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(415, {"error": "Ожидался запрос JSON."})
                 return
             # JSON escapes can use six bytes for one character of pasted text.
-            content = self._body(6 * MAX_TEXT_BYTES + 4096 if capture_text else 64000)
+            json_limit = 6 * MAX_TEXT_BYTES + 4096 if capture_text else 64000
+            if self.mode == "work" and path in ("/api/reports/issue", "/api/reports/template"):
+                json_limit = 3 * 1024 * 1024  # Includes the report, citations and JSON Unicode escapes.
+            content = self._body(json_limit)
             if content is None:
                 return
             data = json.loads(content)
@@ -135,6 +138,9 @@ class Handler(BaseHTTPRequestHandler):
             if self.mode == "work" and self._team_request(path, data, post=True):
                 return
             if self.mode == "work" and self._planning_request(path, data, post=True):
+                return
+            if self.mode == "work" and path.startswith("/api/reports/"):
+                self._send(200, report_web.write(self.server.vault.root, path.removeprefix("/api/reports/"), data))
                 return
             if capture_text:
                 if data.keys() - {"text", "title"}:
@@ -208,6 +214,17 @@ class Handler(BaseHTTPRequestHandler):
         elif self.mode == "work" and self._intake_page(path, params):
             return
         elif self.mode == "work" and self._planning_request(path, params, post=False):
+            return
+        elif self.mode == "work" and path.startswith("/api/reports/"):
+            self._send(200, report_web.read(self.server.vault.root, path.removeprefix("/api/reports/"), params))
+            return
+        elif self.mode == "work" and path.startswith("/report-source/"):
+            from .reports import read_issue_source
+            identifier = unquote(path.removeprefix("/report-source/"))
+            source = read_issue_source(self.server.vault.root, identifier, int(params.get("index", -1)))
+            back = "/#reports/issue?id=" + quote(identifier, safe="")
+            document = self._source_document("Источник отчёта", report_web.source_html(source), back, "Выпуск отчёта")
+            self._send(200, document, "text/html; charset=utf-8")
             return
         elif self.mode == "work" and path == "/api/project-updates":
             from .project_updates import read_updates
