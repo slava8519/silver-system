@@ -65,6 +65,18 @@ class Workspace:
             raise storage.ConflictError("По этому пути теперь другая запись. Обновите карточку.")
         result = self._summary(path, record)
         result.update({key: record[key] for key in ("body", "revision", "body_start", "raw")})
+        if record["type"] == "project":
+            from . import project_updates
+            updates = project_updates.read_record_updates(self.root, path, record, limit=3)
+            result["projectUpdates"] = {key: updates[key] for key in ("brief", "events", "total", "warnings")
+                                        if key in updates}
+            entries, hidden = project_updates.projection(record)
+            if entries or hidden:
+                covered = set(hidden)
+                for entry in entries:
+                    covered.update(range(entry["line"], entry.get("end", entry["line"]) + 1))
+                lines = enumerate(record["body"].splitlines(keepends=True), record["body_start"])
+                result["displayBody"] = "".join(line for number, line in lines if number not in covered)
         return result
 
     def get_record(self, record_id):

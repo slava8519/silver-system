@@ -22,6 +22,7 @@ class ProjectGantt:
             project_fields = {key: project[key] for key in ("direction", *state)}
             project_fields["stateSources"] = {key: project["fieldSources"][key] for key in state
                                                if key in project["fieldSources"]}
+            project_fields["projectUpdates"] = project["projectUpdates"]
             view = {**summary, "scope": "project", "project": {**summary, **project_fields},
                     "items": [], "tree": [], "objectives": []}
 

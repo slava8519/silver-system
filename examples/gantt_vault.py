@@ -8,6 +8,8 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from examples.planning_vault import generate as generate_plans
 from second_brain import demo_cleanup, storage
+from second_brain.batch import Batch
+from second_brain.capture import Capture
 from second_brain.gantt import Gantt
 from second_brain.planning import Planning
 
@@ -145,7 +147,41 @@ def _populate(root):
     seed_milestone_practice(root)
 
 
-def generate(destination):
+def _project_updates(root):
+    path, project = next((path, record) for path, record in storage.iter_records(root)
+                         if record["type"] == "project" and "Маяк" in record["aliases"])
+    batch = Batch(root)
+    rule = next(rule for rule in batch.routing.rules() if rule["direction"] == project["direction"])
+    capture = Capture(root)
+    for title, date, quote, summary in (
+        ("Акт резервного копирования Маяка", "2026-11-20",
+         "Команда «Маяка» подготовила резервную копию базы заказов и сверила контрольную сумму.",
+         "Резервная копия готова, контрольная сумма проверена."),
+        ("Протокол приёмки Маяка", "2026-11-24",
+         "После восстановления базы «Маяка» должны совпасть число заказов и сумма оплат. Команда утвердила этот критерий.",
+         "Критерий проверки согласован. После восстановления сравним число заказов и сумму оплат."),
+        ("Решение перед переключением Маяка", "2026-11-26",
+         "Участники «Маяка» согласовали порядок отката. До переключения нужно проверить восстановление базы на стенде.",
+         "Порядок отката согласован. До переключения нужно проверить восстановление базы на стенде."),
+    ):
+        source_line = f"{date}. {quote}"
+        saved = capture.save_text(f"# {title}\n\n{source_line}\n", title)
+        source = batch.inbox.preview(saved["path"])
+        line = next(row["n"] for row in source["lines"] if row["text"] == source_line)
+        action = {"kind": "project_event", "project": project["id"], "direction": project["direction"],
+                  "rule_revision": rule["revision"], "expected_revision": storage.read_record(path)["revision"],
+                  "line": line, "quote": source_line, "date": date, "text": quote, "summary": summary}
+        result = batch.apply({"path": saved["path"], "revision": source["revision"], "actions": [action]})
+        if result["triage"] or len(result["applied"]) != 1 or result["applied"][0]["summaryStatus"] != "updated":
+            raise ValueError(f"Проверьте разбор учебного протокола «{title}».")
+    project_link = storage.markdown_link("Переезд базы заказов", path, root)
+    with (root / "Home.md").open("a", encoding="utf-8") as home:
+        home.write(f"\n## Что изменилось по Маяку\n\nВ проекте {project_link} откройте «Коротко» "
+                   "и три события за 20–26 ноября 2026 года. Под каждым событием есть ссылка на учебный протокол. "
+                   "В Ганте проекта выберите «Проверить восстановление базы», чтобы увидеть сводку самой работы.\n")
+
+
+def generate(destination, *, with_project_updates=False):
     destination = Path(destination).expanduser().absolute()
     if destination.exists() or destination.is_symlink():
         raise FileExistsError(f"Выберите новый каталог для учебного хранилища: {destination}")
@@ -153,6 +189,8 @@ def generate(destination):
     with tempfile.TemporaryDirectory(dir=destination.parent) as temp:
         root = generate_plans(Path(temp) / "vault")
         _populate(root)
+        if with_project_updates:
+            _project_updates(root)
         demo_cleanup.record_seed(root)
         if destination.exists() or destination.is_symlink():
             raise FileExistsError(f"Каталог учебного хранилища уже занят: {destination}")
@@ -163,7 +201,10 @@ def generate(destination):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("destination", type=Path)
+    parser.add_argument("--project-updates", action="store_true",
+                        help="разобрать три учебных протокола и показать события в Ганте Маяка")
+    args = parser.parse_args()
     try:
-        print(generate(parser.parse_args().destination))
+        print(generate(args.destination, with_project_updates=args.project_updates))
     except (ValueError, OSError) as error:
         parser.exit(1, str(error) + "\n")

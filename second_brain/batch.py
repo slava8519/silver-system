@@ -14,8 +14,10 @@ from .routing import Routing
 _MARKER = "<!-- inbox-batch: "
 _FIRST = "initial"
 _HEADING = re.compile(r"^\s{0,3}#{1,6}(?:\s|$)")
-_DECISION_FIELDS = {"person": ("direction", "rule_revision", "fact_kind", "visibility"),
-                    "project": ("direction", "rule_revision", "project", "field", "expected_revision", "value")}
+_DECISION_FIELDS = {"person": ("direction", "fact_kind", "visibility"),
+                    "project": ("direction", "project", "field", "expected_revision", "value"),
+                    "project_event": ("direction", "project", "expected_revision")}
+_PROJECT_ACTIONS = ("project", "project_event")
 
 
 def _stored_path(value, folder):
@@ -44,7 +46,7 @@ def _journal(previous, digest):
                         or not re.fullmatch(rf"Sources/Originals/{digest}\.[a-z0-9]{{1,16}}", source)
                         or (jobs and (path != jobs[_FIRST]["path"] or source != jobs[_FIRST]["source_path"]))
                         or not isinstance(event["actions"], list)
-                        or not all(isinstance(a, dict) and a.get("kind") in ("triage", "project", "person", "context", "transcript")
+                        or not all(isinstance(a, dict) and a.get("kind") in (*_DECISION_FIELDS, "triage", "context", "transcript")
                                    and type(a.get("line")) is int and isinstance(a.get("quote"), str)
                                    for a in event["actions"])):
                     raise ValueError()
@@ -69,8 +71,12 @@ def _journal(previous, digest):
                             or not people._single_line(result["reason"])):
                         raise ValueError()
                     questions[result["id"]] = {**result, "status": "open"}
-                if result["kind"] == "project" and not all(isinstance(result[k], str) for k in
-                        ("project", "initial_revision", "chain_revision", "path", "field", "value", "revision")):
+                if result["kind"] in _PROJECT_ACTIONS and not all(isinstance(result[k], str) for k in
+                        ("project", "initial_revision", "chain_revision", "path", "revision")):
+                    raise ValueError()
+                if result["kind"] == "project" and not all(isinstance(result[k], str) for k in ("field", "value")):
+                    raise ValueError()
+                if result["kind"] == "project_event" and not isinstance(result["eventId"], str):
                     raise ValueError()
                 if result["kind"] == "transcript" and result["path"] != f"Inbox/Transcripts/{digest}.md":
                     raise ValueError()
@@ -240,12 +246,20 @@ class Batch:
             destination = None
             kind = action["kind"]
             if kind in _DECISION_FIELDS:
-                if not all(people._single_line(action.get(key)) for key in _DECISION_FIELDS[kind]):
+                if ("rule_revision" not in action
+                        or (action["rule_revision"] is not None and not people._single_line(action["rule_revision"]))
+                        or not all(people._single_line(action.get(key)) for key in _DECISION_FIELDS[kind])):
                     raise ValueError("У действия отсутствует обязательное текстовое поле или ревизия.")
                 if kind == "person":
                     identity = people.selected_id(action.get("person"), digest)
                     destination = (kind, identity, action["direction"], action["fact_kind"], action["line"], action["quote"])
                     value = action["visibility"]
+                elif kind == "project_event":
+                    for field in ("text", "date", "summary"):
+                        if action.get(field) is not None and not people._single_line(action[field]):
+                            raise ValueError("Текст события, его дата и сводка должны занимать по одной строке.")
+                    destination = (kind, action["project"], action["line"], action["quote"])
+                    value = (action.get("text") or action["quote"], action.get("date"), action.get("summary"))
                 else:
                     destination = (kind, action["project"], action["field"])
                     value = action["value"]
@@ -258,8 +272,10 @@ class Batch:
                 continue
             conflict = (destination, action["line"], action["quote"])
             if conflict not in disputed:
-                reason = ("Какую видимость назначить этому факту?" if action["kind"] == "person"
-                          else "Для одного поля предложены разные значения. Какое решение действует?")
+                reasons = {"person": "Какую видимость назначить этому факту?",
+                           "project": "Для одного поля предложены разные значения. Какое решение действует?",
+                           "project_event": "Для одного фрагмента предложены разные записи события. Какую сохранить?"}
+                reason = reasons[action["kind"]]
                 reviewed.append({"kind": "triage", "line": action["line"], "quote": action["quote"], "reason": reason})
                 disputed.add(conflict)
         return reviewed
@@ -312,8 +328,8 @@ class Batch:
             return [{"kind": "triage", "line": 0, "quote": "", "reason": str(error)}]
         covered = set()
         for action in actions:
-            if not isinstance(action, dict) or action.get("kind") not in ("person", "project", "triage", "context"):
-                raise ValueError("Укажите вид действия: person, project, triage или context.")
+            if not isinstance(action, dict) or action.get("kind") not in (*_DECISION_FIELDS, "triage", "context"):
+                raise ValueError("Укажите вид действия: person, project, project_event, triage или context.")
             number, quote = action.get("line"), action.get("quote")
             if (type(number) is not int or not 1 <= number <= len(lines) or not people._single_line(quote)
                     or quote not in lines[number - 1]):
@@ -352,16 +368,20 @@ class Batch:
         kind = action["kind"]
         if kind == "transcript":
             return self._transcribe(source, action["text"])
-        if kind == "project":
+        if kind in _PROJECT_ACTIONS:
             initial = action.get("expected_revision")
             project = action.get("project")
             if not isinstance(initial, str) or not isinstance(project, str):
                 raise ValueError("Нужны ID проекта и прочитанная версия карточки.")
             key = (project, initial)
             effective = {**action, "expected_revision": chained.get(key, initial)}
-            saved = self.routing.apply_project_locked(effective, source)
-            return {"project": project, "path": saved["path"], "field": action["field"],
-                    "value": action["value"], "revision": saved["revision"],
+            if kind == "project":
+                saved = self.routing.apply_project_locked(effective, source)
+                detail = {"field": action["field"], "value": action["value"]}
+            else:
+                saved = self.routing.apply_project_event_locked(effective, source)
+                detail = {"eventId": saved["eventId"], "summaryStatus": saved["summaryStatus"]}
+            return {"project": project, "path": saved["path"], **detail, "revision": saved["revision"],
                     "chain_revision": saved["chain_revision"], "initial_revision": initial}
         if kind == "person":
             return self._person(action, source, incoming, raw, owner_reviewed)
@@ -371,7 +391,7 @@ class Batch:
     def _result(job, source, receipt):
         steps = list(job["steps"].values())
         result = {"path": job["path"], "revision": source["id"], "source": source, "processedPath": receipt,
-                "applied": [s for s in steps if s["kind"] in ("person", "project")],
+                "applied": [s for s in steps if s["kind"] in _DECISION_FIELDS],
                 "triage": [s for s in steps if s["kind"] == "triage"],
                 "context": sum(s["kind"] == "context" for s in steps)}
         for step in steps:
@@ -454,15 +474,16 @@ class Batch:
                                       source_path=source["path"], revision=digest, status="open")
                         label = (f'- Вопрос владельцу · строка {result["line"]} — {inbox._label(result["quote"])}. '
                                  f'{inbox._label(result["reason"])}')
-                    elif result["kind"] == "project":
+                    elif result["kind"] in _PROJECT_ACTIONS:
                         link = inbox._link("Проект", self.root / result["path"], receipt.parent)
-                        label = f'- {link} · {result["field"]} · строка {result["line"]} — {inbox._label(result["quote"])}'
+                        field = result.get("field", "событие")
+                        label = f'- {link} · {field} · строка {result["line"]} — {inbox._label(result["quote"])}'
                     elif result["kind"] == "transcript":
                         label = inbox._link("Расшифровка для разбора", self.root / result["path"], receipt.parent)
                     self._append(receipt, digest, {"op": "step", "job": name, "index": index,
                                                   "result": result}, label)
                     job["steps"][index] = result
-                if result["kind"] == "project":
+                if result["kind"] in _PROJECT_ACTIONS:
                     chained[(result["project"], result["initial_revision"])] = result["chain_revision"]
             self._append(receipt, digest, {"op": "end", "job": name}, "Разбор завершён.")
             return self._result(job, source, result_path)

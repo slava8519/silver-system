@@ -26,6 +26,49 @@ class BatchInterfaces(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stderr)
         return json.loads(run.stdout)
 
+    def test_new_direction_uses_default_until_the_owner_saves_an_explicit_policy(self):
+        direction = storage.read_record(storage.create(self.root, "direction", "Новая площадка"))["id"]
+        card = storage.read_record(storage.create(self.root, "project", "Луна", direction=direction))
+        rule, = self.cli("inbox-rules", "--direction", direction)["items"]
+        self.assertIsNone(rule["revision"])
+        self.assertIsNone(rule["path"])
+        self.assertEqual(rule["project_fields"], ["event", "summary"])
+        quote = "Луна готова. Ирина проводит проверку."
+        incoming = self.root / "Inbox" / "Площадка.md"
+        incoming.write_text(quote)
+        def apply(actions):
+            item = self.cli("inbox-read", "Inbox/Площадка.md")
+            return self.cli("inbox-apply", data={"path": "Inbox/Площадка.md", "revision": item["revision"],
+                                                "actions": actions})
+        common = {"direction": direction, "rule_revision": rule["revision"], "line": 1}
+        project = {**common, "project": card["id"], "expected_revision": card["revision"], "quote": "Луна готова"}
+        event = {**project, "kind": "project_event", "summary": "Площадка готова."}
+        field = {**project, "kind": "project", "field": "status", "value": "готова"}
+        person = {**common, "kind": "person", "person": {"new": True, "name": "Ирина"}, "fact_kind": "role",
+                  "visibility": "personal", "quote": "Ирина проводит проверку"}
+        result = apply([event, field, person])
+        self.assertEqual([row["kind"] for row in result["applied"]], ["project_event"])
+        self.assertEqual(len(result["triage"]), 2)
+        saved = self.cli("show", card["id"], "--brief")
+        self.assertEqual(saved["projectUpdates"]["brief"]["text"], "Площадка готова.")
+        self.assertIsNone(saved["status"])
+        self.assertEqual(self.cli("people", "--match", "Ирина")["total"], 0)
+        self.assertFalse((self.root / "Settings" / "Intake" / (direction + ".md")).exists())
+
+        # A reviewer still holding the built-in policy cannot overwrite a newly saved opt-out.
+        off = self.cli("inbox-rule", data={"direction": direction, "instructions": "Только читаем.",
+                                          "project_fields": [], "expected_revision": None})
+        incoming.write_text("Луна готова к открытию.")
+        event.update(expected_revision=saved["revision"], quote="Луна готова к открытию.")
+        conflict = apply([event])
+        self.assertFalse(conflict["applied"])
+        self.assertIn("изменились", conflict["triage"][0]["reason"])
+        incoming.write_text("Луна готова к показу.")
+        event.update(rule_revision=off["revision"], quote="Луна готова к показу.")
+        disabled = apply([event])
+        self.assertFalse(disabled["applied"])
+        self.assertEqual(self.cli("project-updates", card["id"])["total"], 1)
+
     def test_three_directions_and_owner_followup(self):
         rows = self.cli("inbox-new")["items"]
         self.assertEqual(len(rows), 4)

@@ -15,7 +15,7 @@ from .storage import KINDS, iter_markdown_paths, iter_records
 
 
 # Bump this when the on-disk index layout or indexed text changes.
-_INDEX_VERSION = b"second-brain-search-2\0"
+_INDEX_VERSION = b"second-brain-search-3\0"
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
 _STOP_WORDS = set("""
     а без бы был была было были в во где для до его ее за и из или к как какой
@@ -85,9 +85,18 @@ def _read_index(database):
     return closing(sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True))
 
 
-def _source_lines(path, record):
+def visible_body_lines(record, hidden=None):
+    """Keep file coordinates while excluding the project log's internal bookkeeping."""
+    if hidden is None and record["type"] == "project":
+        from .project_updates import projection
+        _, hidden = projection(record)
+    lines = enumerate(record["body"].splitlines(), record["body_start"])
+    return ((n, line) for n, line in lines if n not in hidden) if hidden else lines
+
+
+def _source_lines(path, record, hidden):
     found = False
-    for number, line in enumerate(record["body"].splitlines(), record["body_start"]):
+    for number, line in visible_body_lines(record, hidden):
         if line.strip() and line.strip() != "# " + record["title"]:
             found = True
             yield number, line
@@ -101,6 +110,7 @@ def _source_lines(path, record):
 
 def _build(root, database, signature):
     from .people import People
+    from .project_updates import projection
     descriptor, temporary = tempfile.mkstemp(dir=database.parent, suffix=".sqlite3")
     os.close(descriptor)
     try:
@@ -108,23 +118,31 @@ def _build(root, database, signature):
             db.execute("CREATE TABLE metadata (signature TEXT NOT NULL)")
             db.execute("""CREATE VIRTUAL TABLE fragments USING fts5(
                 path UNINDEXED, id UNINDEXED, title UNINDEXED, line UNINDEXED, text UNINDEXED,
-                title_terms, alias_terms, body_terms, tokenize='unicode61'
+                title_terms, alias_terms, body_terms, brief_names UNINDEXED, tokenize='unicode61'
             )""")
             for path, record in iter_records(root):
                 relative = path.relative_to(root).as_posix()
                 title = record["title"]
                 aliases = _normalize(" ".join(record["aliases"]))
-                rows = (
-                    (relative, record["id"], title, number, line,
-                     _normalize(title), aliases, _normalize(line))
-                    for number, line in _source_lines(path, record)
-                )
-                db.executemany("INSERT INTO fragments VALUES (?,?,?,?,?,?,?,?)", rows)
+                entries, hidden = projection(record) if record["type"] == "project" else ([], set())
+                fields = {entry["line"]: entry for entry in entries}
+                names = "\x1f" + "\x1f".join(" ".join(word_stems(name)) for name in [title, *record["aliases"]]) + "\x1f"
+                for number, line in _source_lines(path, record, hidden):
+                    entry = fields.get(number, {})
+                    is_brief = entry.get("field") == "brief"
+                    terms = _normalize(line)
+                    if is_brief:
+                        terms += " коротко сводка"
+                    elif entry:
+                        terms += " событие история " + (entry.get("date") or "")
+                    db.execute("INSERT INTO fragments VALUES (?,?,?,?,?,?,?,?,?)", (
+                        relative, record["id"], title, number, line, _normalize(title), aliases, terms,
+                        names if is_brief else ""))
             for fact in People(root).shared_facts():
-                db.execute("INSERT INTO fragments VALUES (?,?,?,?,?,?,?,?)", (
+                db.execute("INSERT INTO fragments VALUES (?,?,?,?,?,?,?,?,?)", (
                     fact["path"], fact["personId"], fact["personName"], fact["cardLine"], fact["text"],
                     _normalize(fact["personName"]), _normalize(" ".join(fact.get("aliases", []))),
-                    _normalize(fact["text"])))
+                    _normalize(fact["text"]), ""))
             db.execute("INSERT INTO metadata VALUES (?)", (signature,))
         os.replace(temporary, database)
     finally:
@@ -137,12 +155,12 @@ def rebuild(root: Path):
     _build(root, database, _signature(root))
 
 
-def _results(db, expression, limit, record_id):
+def _results(db, expression, limit, record_id, name):
     db.row_factory = sqlite3.Row
     rows = db.execute("""
         WITH candidates AS (
-            SELECT path, id, title, line, text, rank AS score,
-                   row_number() OVER (PARTITION BY path ORDER BY rank, line) AS position
+            SELECT path, id, title, line, text, rank AS score, instr(brief_names, ?) > 0 AS exact_brief,
+                   row_number() OVER (PARTITION BY path ORDER BY instr(brief_names, ?) > 0 DESC, rank, line) AS position
             FROM fragments
             WHERE fragments MATCH ?
               AND (? IS NULL OR id = ?)
@@ -150,8 +168,8 @@ def _results(db, expression, limit, record_id):
         )
         SELECT path, id, title, line AS start, line AS end, text
         FROM candidates WHERE position = 1
-        ORDER BY score, path LIMIT ?
-    """, (expression, record_id, record_id, limit))
+        ORDER BY exact_brief DESC, score, path LIMIT ?
+    """, (name, name, expression, record_id, record_id, limit))
     return [dict(row) for row in rows]
 
 
@@ -164,17 +182,18 @@ def search(root: Path, query: str, limit: int = 5, *, record_id: Optional[str] =
         return []
     root = Path(root).resolve()
     database = _database(root)
+    name = "\x1f" + " ".join(word_stems(query)) + "\x1f"
     signature = _signature(root)
     if database.is_file():
         try:
             with _read_index(database) as db:
                 if db.execute("SELECT signature FROM metadata").fetchone() == (signature,):
-                    return _results(db, expression, limit, record_id)
+                    return _results(db, expression, limit, record_id, name)
         except sqlite3.DatabaseError:
             pass  # A missing or damaged cache can be reconstructed from the files.
     _build(root, database, signature)
     with _read_index(database) as db:
-        return _results(db, expression, limit, record_id)
+        return _results(db, expression, limit, record_id, name)
 
 
 def fragment(root: Path, path: str, start: int, end: int) -> str:

@@ -7,7 +7,7 @@ import sqlite3
 import sys
 
 from . import brief, intake_cli, okr_cli, okr_progress_cli, plan_tree, planning_cli, project_activity_cli
-from . import relation_map_cli, search, storage, teams_cli, weekly_report
+from . import project_updates_cli, relation_map_cli, search, storage, teams_cli, weekly_report
 from .examples import create_examples
 
 
@@ -82,6 +82,7 @@ def command_line():
     okr_cli.add_commands(commands)
     okr_progress_cli.add_commands(commands)
     project_activity_cli.add_commands(commands)
+    project_updates_cli.add_commands(commands)
     relation_map_cli.add_commands(commands)
     plan_tree.add_commands(commands)
     teams_cli.add_commands(commands)
@@ -158,6 +159,8 @@ def run(args):
         return okr_progress_cli.run(root, args)
     if getattr(args, "project_activity", False):
         return project_activity_cli.run(root, args)
+    if args.command in ("project-updates", "project-update"):
+        return project_updates_cli.run(root, args)
     if args.command == "map":
         return relation_map_cli.run(root, args)
     if getattr(args, "teams", False):
@@ -171,6 +174,8 @@ def run(args):
         data = {"query": args.query}
         if args.direction:
             data["directionIds"] = args.direction
+        if args.brief:
+            data["limit"] = args.limit or brief.DEFAULT_LIMIT
         result = WorkspaceQuery(root).ask(data)
         limit = args.limit or brief.DEFAULT_LIMIT
         if args.brief:
@@ -242,7 +247,7 @@ def main():
     elif (getattr(args, "brief", False) or getattr(args, "folders", False) or getattr(args, "intake", False)
           or getattr(args, "planning", False) or getattr(args, "okr", False) or getattr(args, "teams", False)
           or getattr(args, "plan_tree", False) or getattr(args, "okr_progress", False)
-          or getattr(args, "project_activity", False) or args.command in ("map", "weekly-review")
+          or getattr(args, "project_activity", False) or args.command in ("map", "weekly-review", "project-updates", "project-update")
           or (args.command == "list" and isinstance(result, dict))):
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
     else:

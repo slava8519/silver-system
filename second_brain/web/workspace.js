@@ -5,6 +5,7 @@ import { planningView } from "./gantt.js";
 import { activityHelp } from "./activity-help.js";
 import { mountRelationMap } from "./relation-map.js";
 import { relationMapHelp } from "./relation-map-help.js";
+import { projectUpdatesPanel } from "./project-updates.js";
 
 (() => {
   const main = document.getElementById("content");
@@ -269,23 +270,23 @@ import { relationMapHelp } from "./relation-map-help.js";
     return facts;
   }
 
-  function recordBody(record) {
+  function recordBody(record, text) {
     const body = node("pre", "record-body");
     if (record.type !== "project") {
-      body.textContent = record.body;
+      body.textContent = text;
       return body;
     }
     const toRoot = "../".repeat(record.path.split("/").length - 1);
     const archiveLink = /\[Источник, строка (\d+)\]\(((?:\.\.\/)+)Sources\/Originals\/([a-f0-9]{64})\.(?:md|txt)\)/g;
     let start = 0;
-    for (const match of record.body.matchAll(archiveLink)) {
+    for (const match of text.matchAll(archiveLink)) {
       const [, line, folders, digest] = match;
       if (folders !== toRoot || !Number.isSafeInteger(Number(line)) || Number(line) < 1) continue;
-      body.append(record.body.slice(start, match.index), link("Оригинал · строка " + line,
+      body.append(text.slice(start, match.index), link("Оригинал · строка " + line,
         "/original/" + digest + "?start=" + line, "text-link"));
       start = match.index + match[0].length;
     }
-    body.append(record.body.slice(start));
+    body.append(text.slice(start));
     return body;
   }
 
@@ -303,6 +304,9 @@ import { relationMapHelp } from "./relation-map-help.js";
       panel.append(areaLine);
     }
     if (record.aliases?.length) panel.append(node("p","muted","Другие названия · " + record.aliases.join(", ")));
+    if (record.type === "project" && record.projectUpdates) {
+      panel.append(projectUpdatesPanel({node, button, link, notice, api, labelled}, record, () => go(recordURL(id))));
+    }
     if (record.type === "project") panel.append(recordFacts(record));
     const selectedField = params.get("field");
     const selectedLine = record.fieldSources?.[selectedField]?.line;
@@ -313,16 +317,22 @@ import { relationMapHelp } from "./relation-map-help.js";
     sourceBox.open = Boolean(selectedLine);
     sourceBox.append(node("summary", "text-link", record.path + (selectedLine ? " · строка " + selectedLine : "")));
     const lines = node("div", "source-lines");
-    record.raw.split(/\r?\n/).forEach((line,index) => {
-      const n = index + 1;
-      const row = node("div","source-line" + (n === selectedLine ? " highlight" : ""));
-      row.append(node("span","line-number",n),node("code","line-text",line || " "));
-      lines.append(row);
-    });
+    function showSource() {
+      if (!sourceBox.open || lines.childElementCount) return;
+      record.raw.split(/\r?\n/).forEach((line,index) => {
+        const n = index + 1;
+        const row = node("div","source-line" + (n === selectedLine ? " highlight" : ""));
+        row.append(node("span","line-number",n),node("code","line-text",line || " "));
+        lines.append(row);
+      });
+    }
+    showSource();
+    sourceBox.addEventListener("toggle", showSource);
     sourceBox.append(lines);
     panel.append(sourceBox);
-    if (record.body) {
-      const body = recordBody(record);
+    const displayBody = record.displayBody?.trimEnd() ?? record.body;
+    if (displayBody?.trim()) {
+      const body = recordBody(record, displayBody);
       body.hidden = sourceBox.open;
       sourceBox.addEventListener("toggle", () => { body.hidden = sourceBox.open; });
       panel.append(body);

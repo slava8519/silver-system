@@ -1,4 +1,7 @@
-const projectFields = {status: "Статус", due: "Срок", next_step: "Следующий шаг"};
+const projectFields = {
+  status: "Статус", due: "Срок", next_step: "Следующий шаг",
+  event: "События проекта", summary: "Коротко по событиям проекта"
+};
 const personScopes = {shared: "Для общего поиска", personal: "Личные сведения"};
 const titles = {triage: "Вопросы владельцу", rules: "Правила направлений"};
 const pageSize = 10;
@@ -12,12 +15,11 @@ export function batchViews({node, link, button, section, labelled, notice, api, 
       return summary;
     }
     if (!rule.revision) {
-      summary.append(node("p", "muted", "Добавьте правило, чтобы Codex мог разбирать материалы этого направления."));
-      return summary;
+      summary.append(node("p", "muted", "Действуют настройки по умолчанию."));
     }
     const values = node("dl", "batch-policy");
     for (const [label, keys, names, empty] of [
-      ["Поля проекта", rule.project_fields, projectFields, "Обновления отключены"],
+      ["Проект", rule.project_fields, projectFields, "Обновления отключены"],
       ["Карточки людей", rule.person_visibilities, personScopes, "Запись отключена"]
     ]) {
       const row = node("div");
@@ -51,14 +53,22 @@ export function batchViews({node, link, button, section, labelled, notice, api, 
     card.append(heading, describeRule(rule));
     if (rule.error) return card;
     const details = node("details", "batch-editor");
-    const toggle = node("summary", "text-link", rule.revision ? "Изменить правило" : "Добавить правило");
+    const toggle = node("summary", "text-link", rule.revision ? "Изменить правило" : "Настроить правило");
     const form = node("form", "fact-correction");
     const instructions = node("textarea");
     instructions.name = "instructions";
     instructions.rows = 3;
     instructions.required = true;
     instructions.value = rule.instructions;
-    const fields = group("Какие поля проекта можно обновить", "project_fields", projectFields, rule.project_fields);
+    const fields = group("Что можно записать в проект", "project_fields", projectFields, rule.project_fields);
+    const eventCheck = fields.querySelector('input[value="event"]');
+    const summaryCheck = fields.querySelector('input[value="summary"]');
+    summaryCheck.addEventListener("change", () => {
+      if (summaryCheck.checked) eventCheck.checked = true;
+    });
+    eventCheck.addEventListener("change", () => {
+      if (!eventCheck.checked) summaryCheck.checked = false;
+    });
     const scopes = group("Что можно сохранить о людях", "person_visibilities", personScopes, rule.person_visibilities);
     const save = node("button", "button button-primary", "Сохранить правило");
     save.type = "submit";

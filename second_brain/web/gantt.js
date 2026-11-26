@@ -6,6 +6,7 @@ import {closedDay, closedStamp, cyclePreview, snapshotInspector} from "./gantt-c
 import {branchDates, treeRows} from "./gantt-tree.js";
 import {okrLink, openOKR} from "./gantt-okr.js";
 import {planProjects} from "./project-participation.js";
+import {projectUpdatesPanel} from "./project-updates.js";
 
 function urlFor(id, task, scope) {
   const params = new URLSearchParams();
@@ -86,6 +87,7 @@ export function planningView(ui) {
     const connector = pageHead(projectView ? "Гант проекта · " + vault : vault, plan.title, ...headerActions, refreshButton);
     connector.classList.add("gantt-heading");
     const projectFacts = node("p", "gantt-project-facts");
+    const projectUpdates = node("div");
     function showProjectFacts() {
       projectFacts.replaceChildren();
       for (const [key, label] of [["status", "Статус"], ["projectStart", "Начало проекта"], ["due", "Срок проекта"]]) {
@@ -99,6 +101,12 @@ export function planningView(ui) {
         projectFacts.append(item);
       }
       projectFacts.hidden = !projectFacts.childElementCount;
+      const updates = plan.project.projectUpdates;
+      projectUpdates.replaceChildren();
+      if (updates?.brief?.text || updates?.total || updates?.warnings?.length) {
+        const project = {...plan.project, projectUpdates:{...updates, events:updates.events.slice(0,1)}};
+        projectUpdates.append(projectUpdatesPanel(ui, project));
+      }
     }
     const navigation = node("div", "work-tools");
     if (projectView) {
@@ -110,6 +118,7 @@ export function planningView(ui) {
     } else navigation.append(link("← Все планы", "#plans", "back-link"), okrLink(ui, planId));
     if (!ui.compact) navigation.append(link("Показать связи", "#map?" + new URLSearchParams({id}), "text-link"));
     view.append(navigation, connector);
+    if (projectView) view.append(projectUpdates);
     if (!projectView) {
       const params = new URLSearchParams(location.hash.split("?")[1]);
       view.append(planProjects(ui, planId, {open:params.get("projects") === "1",

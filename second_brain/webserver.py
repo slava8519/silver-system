@@ -16,6 +16,7 @@ from .batch import Batch
 from .capture import Capture, CaptureTooLarge, MAX_FILE_BYTES, MAX_TEXT_BYTES
 from .inbox import Inbox
 from .routing import Routing
+from .search import visible_body_lines
 
 WEB = Path(__file__).resolve().parent / "web"
 
@@ -153,6 +154,14 @@ class Handler(BaseHTTPRequestHandler):
             if self.mode == "work" and path == "/api/records/edit":
                 self._send(200, self.server.vault.edit_record(data))
                 return
+            if self.mode == "work" and path == "/api/project-brief":
+                from .project_updates import write_update
+                if data.keys() != {"id", "text", "revision"}:
+                    raise ValueError("Укажите проект, текст сводки и прочитанную версию.")
+                result = write_update(self.server.vault.root, data["id"], field="brief", text=data["text"],
+                                      revision=data["revision"], actor="manual")
+                self._send(200, result)
+                return
             if self.mode == "work" and path == "/api/inbox/process":
                 self._send(200, Inbox(self.server.vault.root).process(data))
                 return
@@ -193,6 +202,12 @@ class Handler(BaseHTTPRequestHandler):
         elif self.mode == "work" and self._intake_page(path, params):
             return
         elif self.mode == "work" and self._planning_request(path, params, post=False):
+            return
+        elif self.mode == "work" and path == "/api/project-updates":
+            from .project_updates import read_updates
+            result = read_updates(self.server.vault.root, params.get("id"),
+                                  limit=int(params.get("limit", 5)), offset=int(params.get("offset", 0)))
+            self._send(200, result)
             return
         elif self.mode == "work" and path == "/api/record":
             record_id = parse_qs(url.query).get("id", [""])[0]
@@ -644,7 +659,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(409 if isinstance(error, storage.ConflictError) else 404, document, "text/html; charset=utf-8")
             return
         rows = []
-        lines = enumerate(record["body"].splitlines(), record["body_start"])
+        lines = visible_body_lines(record)
         if source["start"] < record["body_start"]:
             lines = ((item["n"], item["text"]) for item in source["lines"])
         for n, line in lines:

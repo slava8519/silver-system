@@ -8,6 +8,7 @@ from second_brain import storage
 from second_brain.batch import Batch
 from second_brain.inbox import Inbox
 from second_brain.people import People
+from second_brain.project_updates import read_updates, write_update
 from second_brain.routing import Routing
 
 
@@ -44,6 +45,102 @@ class BatchTests(unittest.TestCase):
         return {"kind": "person", "person": {"name": name, "new": True}, "direction": self.direction,
                 "fact_kind": "role", "visibility": scope, "line": line, "quote": quote,
                 "rule_revision": self.rule["revision"]}
+
+    def allow_project_events(self, *permissions):
+        self.rule = self.batch.routing.set_rule(self.direction, self.rule["instructions"],
+                                                ["status", *permissions], [], self.rule["revision"])
+
+    def event_action(self, line, quote, **changes):
+        return {"kind": "project_event", "project": self.project["id"], "direction": self.direction,
+                "expected_revision": self.project["revision"], "rule_revision": self.rule["revision"],
+                "line": line, "quote": quote, **changes}
+
+    def test_project_event_from_inbox_and_status_share_a_revision(self):
+        self.allow_project_events("event", "summary")
+        first = "2026-05-18 репетиция завершена."
+        second = "2026-05-20 концерт готов."
+        item = self.incoming("Репетиция.txt", first + "\n" + second)
+        request = self.plan(item, self.event_action(1, first, date="2026-05-18"),
+                            self.project_action("status", "готов", 2, second),
+                            self.event_action(2, second, date="2026-05-20", summary="Подготовка завершена."))
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            a, b = pool.map(self.batch.apply, (request, request))
+        self.assertEqual(a, b)
+        self.assertEqual(a["triage"], [])
+        self.assertEqual([r["kind"] for r in a["applied"]], ["project_event", "project", "project_event"])
+        self.assertNotEqual(a["applied"][0]["eventId"], a["applied"][2]["eventId"])
+        project = storage.read_record(storage.find_record(self.root, self.project["id"]))
+        self.assertEqual(project["status"], "готов")
+        for value in (first, second, "Подготовка завершена.", a["source"]["id"]):
+            self.assertIn(value, project["body"])
+        self.assertEqual(self.batch.pending(), [])
+
+    def test_old_rule_and_unconfirmed_event_date_leave_questions(self):
+        item = self.incoming("Музыка.md", "Репетиция завершена.")
+        result = self.batch.apply(self.plan(item, self.event_action(1, "Репетиция завершена.")))
+        self.assertFalse(result["applied"])
+        self.assertEqual(len(result["triage"]), 1)
+        self.allow_project_events("event")
+        quote = "Зрители заполнили зал."
+        other = self.incoming("Зал.md", quote)
+        result = self.batch.apply(self.plan(other, self.event_action(1, quote, date="2026-05-20")))
+        self.assertFalse(result["applied"])
+        self.assertEqual(len(result["triage"]), 1)
+        path = storage.find_record(self.root, self.project["id"])
+        self.assertEqual(storage.read_record(path)["revision"], self.project["revision"])
+
+    def test_event_permission_preserves_fact_without_granting_summary_access(self):
+        self.allow_project_events("event")
+        quote = "Репетиция состоялась."
+        item = self.incoming("Афиша.txt", quote)
+        result = self.batch.apply(self.plan(item, self.event_action(1, quote, summary="Перейти к съёмке.")))
+        self.assertEqual(result["applied"][0]["summaryStatus"], "not_permitted")
+        text = storage.find_record(self.root, self.project["id"]).read_text(encoding="utf-8")
+        self.assertIn(quote, text)
+        self.assertNotIn("Перейти к съёмке.", text)
+
+    def test_late_and_manually_reviewed_events_keep_the_current_summary(self):
+        self.allow_project_events("event", "summary")
+        project_id = self.project["id"]
+        for date, fact, summary, expected_state in (
+                ("2026-05-20", "Концерт состоялся.", "Готовим запись.", "updated"),
+                ("2026-05-15", "Утверждена программа.", "Готовим концерт.", "older_event"),
+                ("2026-05-22", "Запись передана.", "Запись передана.", "manual_preserved")):
+            quote = f"{date}. {fact}"
+            item = self.incoming(date + ".md", quote)
+            self.project = storage.read_record(storage.find_record(self.root, project_id))
+            result = self.batch.apply(self.plan(item, self.event_action(1, quote, date=date, summary=summary)))
+            self.assertEqual(result["applied"][0]["summaryStatus"], expected_state)
+            updates = read_updates(self.root, project_id)
+            if expected_state == "older_event":
+                self.assertEqual(updates["brief"]["text"], "Готовим запись.")
+                write_update(self.root, project_id, revision=updates["revision"], field="brief",
+                             actor="manual", text="Ждём согласования записи.")
+        self.assertEqual(updates["brief"]["text"], "Ждём согласования записи.")
+        self.assertEqual(updates["total"], 3)
+        self.assertTrue(all(e["sources"][0]["available"] for e in updates["events"]))
+
+    def test_project_event_resume_preserves_intervening_manual_edit(self):
+        self.allow_project_events("event")
+        quote = "Концерт готов."
+        item = self.incoming("Проверка.txt", quote)
+        request = self.plan(item, self.event_action(1, quote), self.project_action("status", "готов", 1, quote))
+        append = self.batch._append
+        def interrupt(path, digest, event, label=""):
+            if event["op"] == "step":
+                raise InterruptedError
+            return append(path, digest, event, label)
+        with patch.object(self.batch, "_append", side_effect=interrupt), self.assertRaises(InterruptedError):
+            self.batch.apply(request)
+        path = storage.find_record(self.root, self.project["id"])
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write("\nРучное уточнение между разборами.\n")
+        current = path.read_bytes()
+        result = self.batch.apply(request)
+        self.assertEqual([r["kind"] for r in result["applied"]], ["project_event"])
+        self.assertEqual(len(result["triage"]), 1)
+        self.assertEqual(path.read_bytes(), current)
+        self.assertEqual(self.batch.apply(request), result)
 
     def test_mixed_source_projects_people_and_owner_question(self):
         content = "# Протокол\r\nКонцерт готов.\r\nСрок 20 мая.\r\nАда дирижирует.\r\nМайя отвечает за свет.\r\nКто заберёт пюпитр?\r\n"

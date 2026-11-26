@@ -42,11 +42,16 @@ def answer(result, limit):
                  "source": {key: citation[key] for key in ("path", "start", "end")}}
         if "evidence" in citation:
             entry["source"]["evidence"] = citation["evidence"]
+        if "origin" in citation:
+            entry["source"]["origin"] = origin_location(citation["origin"])
+        for key in ("kind", "date"):
+            if key in item:
+                entry[key] = item[key]
         if len(excerpt) > EXCERPT_LENGTH:
             entry["answerTruncated"] = True
         clip_fields(entry, ("label",))
         items.append(entry)
-    total = len(result["items"])
+    total = result.get("total", len(result["items"]))
     response = {"items": items, "total": total, "truncated": total > len(items), "message": result["message"]}
     clip_fields(response, ("message",))
     return response
@@ -99,6 +104,14 @@ def record(detail):
                                             "status", "due", "nextStep")}
     if detail["type"] == "project":
         result["projectStart"] = detail["projectStart"]
+        updates = detail["projectUpdates"]
+        result["projectUpdates"] = {
+            "brief": project_entry(updates["brief"]) if updates["brief"] else None,
+            "events": [project_entry(event) for event in updates["events"]],
+            "total": updates["total"],
+        }
+        if updates.get("warnings"):
+            result["projectUpdates"]["warnings"] = updates["warnings"]
     clip_fields(result, (key for key in ("title", "status", "projectStart", "due", "nextStep") if key in result))
     aliases = detail["aliases"]
     result["aliases"] = [name[:EXCERPT_LENGTH] for name in aliases[:DEFAULT_LIMIT]]
@@ -107,4 +120,22 @@ def record(detail):
     result["fieldSources"] = {key: detail["fieldSources"][key]
                               for key in ("title", "aliases", "direction", "status", "projectStart", "due", "nextStep")
                               if key in detail["fieldSources"]}
+    return result
+
+
+def project_entry(entry):
+    result = {key: entry[key] for key in ("text", "date", "line", "author") if entry.get(key) is not None}
+    if entry["end"] != entry["line"]:
+        result["end"] = entry["end"]
+    clip_fields(result, ("text",))
+    if entry.get("sources"):
+        origin = next((s for s in entry["sources"] if s["available"]), entry["sources"][0])
+        result["origin"] = origin_location(origin)
+    return result
+
+
+def origin_location(source):
+    result = {key: source[key] for key in ("path", "line")}
+    if source.get("available") is False:
+        result["available"] = False
     return result

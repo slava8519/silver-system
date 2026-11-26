@@ -1,9 +1,10 @@
 """Select source lines by subject, record names and explicitly recorded decisions."""
 
 import re
+from datetime import date
 from difflib import SequenceMatcher
 
-from .search import word_stems
+from .search import visible_body_lines, word_stems
 
 
 # These words express the request rather than the subject being retrieved.
@@ -33,6 +34,35 @@ _CITATION_WORDS = set(word_stems(
     "запись записи каждую каждого каждой решения факта ответа файл строку отдельно "
     "на для по к each every decision fact answer record file line for"))
 _CURRENT = set(word_stems("текущий сейчас сегодня актуальный current now currently today"))
+_EXPLICIT_BRIEF = re.compile(r"\b(?:коротко|кратко|вкратце|сводк\w*|резюме|summary)\b", re.I)
+_BRIEF_REQUEST = re.compile(
+    r"\b(?:коротко|кратко|вкратце|сводк\w*|резюме|где (?:мы |проект )?(?:сейчас|находимся)|"
+    r"где сейчас|как (?:сейчас |обстоят |идут )*дела|что (?:сейчас )?происходит|"
+    r"текущ(?:ая|ую) (?:картин\w*|ситуаци\w*)|в каком состоянии|что с проектом|"
+    r"как (?:продвигается|идёт|идет) проект|"
+    r"на каком (?:мы )?этапе|"
+    r"where (?:are we|do we stand)|project summary|current situation)\b", re.I)
+_EVENT_REQUEST = re.compile(
+    r"\b(?:что (?:там |недавно |последним )?(?:изменил\w*|поменял\w*|нового|произошло|случилось)|"
+    r"(?:последн\w*|недавн\w*|свеж\w*) (?:изменени\w*|событи\w*|новост\w*)|"
+    r"истори(?:я|ю|и)\s+(?:по|проекта|событий|изменений)|хроник\w*|событи[яй]|"
+    r"какие (?:были )?изменения|последнее по|"
+    r"what(?: has|'s)? changed|what.s new|recent (?:events|changes))\b", re.I)
+_ISO_DAY = re.compile(r"(?<!\w)\d{4}-\d{2}-\d{2}(?!\w)")
+_EVENT_INTERVAL = re.compile(r"\s*(?:по|до|to|through|and|[–—-]|\.\.)\s*", re.I)
+_TIME_HINT = re.compile(
+    r"\b(?:сегодня|вчера|позавчера|завтра|назад|прошл\w*|минувш\w*|недел\w*|месяц\w*|"
+    r"квартал\w*|полугод\w*|год[ауы]?|лет|дн(?:я|ей|и)?|сут(?:ки|ок)|час(?:а|ов|ы)?|"
+    r"весной|летом|осенью|зимой|выходн\w*|"
+    r"январ\w*|феврал\w*|март\w*|апрел\w*|ма[йяею]|июн\w*|июл\w*|август\w*|"
+    r"сентябр\w*|октябр\w*|ноябр\w*|декабр\w*|понедельник\w*|вторник\w*|сред[уы]|"
+    r"четверг\w*|пятниц\w*|суббот\w*|воскресень\w*|за|между|после|перед|раньше|позже|"
+    r"с (?:начала|момента)|к моменту|"
+    r"today|yesterday|last|week\w*|month\w*|year\w*|before|after|during|"
+    r"january|february|march|april|may|june|july|august|september|october|november|december|"
+    r"\d{4}|\d{1,2}[./-]\d{1,2})\b", re.I)
+_PERIOD_HELP = ("Уточните период событий датой ГГГГ-ММ-ДД или диапазоном, например "
+                "«с 2026-11-01 по 2026-11-25». Обе границы входят в период.")
 _STATE_REQUEST = {frozenset(word_stems(phrase)): field for field, phrases in (
     ("status", ("статус", "состояние", "status", "state")),
     ("due", ("срок", "дедлайн", "deadline", "due", "due date")),
@@ -72,6 +102,92 @@ def _mentions(words, record, *, state_query=False):
     return None
 
 
+def _event_period(query):
+    dates = list(_ISO_DAY.finditer(query))
+    if not dates:
+        if _TIME_HINT.search(query):
+            raise ValueError(_PERIOD_HELP)
+        return (None, None)
+    try:
+        days = [date.fromisoformat(match[0]).isoformat() for match in dates]
+    except ValueError:
+        raise ValueError(_PERIOD_HELP) from None
+    prefix, suffix = query[:dates[0].start()], query[dates[-1].end():]
+    between = bool(re.search(r"\bbetween\s*$", prefix, re.I))
+    prefix = re.sub(r"\b(?:за|на|between)\s*$", "", prefix, flags=re.I)
+    if _TIME_HINT.search(prefix + " " + suffix):
+        raise ValueError(_PERIOD_HELP)
+    if len(days) == 1:
+        if re.search(r"\b(?:с|от|from|since)\s*$", prefix, re.I):
+            return days[0], None
+        if re.search(r"\b(?:по|до|until|through)\s*$", prefix, re.I):
+            return None, days[0]
+        return days[0], days[0]
+    if len(days) == 2 and days[0] <= days[1]:
+        separator = query[dates[0].end():dates[1].start()]
+        if _EVENT_INTERVAL.fullmatch(separator) and (separator.strip().lower() != "and" or between):
+            return days[0], days[1]
+    raise ValueError(_PERIOD_HELP)
+
+
+def project_update_request(query, records):
+    """Select explicitly named projects for questions about their brief or event log."""
+    fields = [kind for kind, pattern in (("brief", _BRIEF_REQUEST), ("event", _EVENT_REQUEST))
+              if pattern.search(query)]
+    if not fields:
+        return None
+    # Match complete titles and aliases. A longer name owns its overlapping span,
+    # and two projects sharing the selected name require an explicit choice.
+    def tokens(value):
+        return [word[:-1] if len(word) > 3 and word.endswith("о") else word for word in word_stems(value)]
+
+    words, positions = [], []
+    for term in re.finditer(r"[^\W_]+", query):
+        for word in tokens(term[0]):
+            words.append(word)
+            positions.append(term.span())
+    spans = {}
+    for record in records:
+        if record["type"] != "project":
+            continue
+        for name in [record["title"], *record["aliases"]]:
+            phrase = tokens(name)
+            if not phrase:
+                continue
+            for start in range(len(words) - len(phrase) + 1):
+                end = start + len(phrase)
+                if words[start:end] == phrase:
+                    spans.setdefault((start, end), {})[record["id"]] = name
+    matches = {}
+    selected_spans = []
+    for (start, end), names in sorted(spans.items()):
+        if any(a <= start and end <= b and (a, b) != (start, end) for a, b in spans):
+            continue
+        if len(names) > 1:
+            return fields, {}, "Название относится к нескольким проектам. Уточните направление или название проекта.", (None, None)
+        matches.update(names)
+        selected_spans.append((positions[start][0], positions[end - 1][1]))
+    if matches:
+        period = (None, None)
+        if "event" in fields:
+            # A date can be part of a project title, e.g. «Форум 2026».
+            for start, end in reversed(selected_spans):
+                query = query[:start] + " [проект] " + query[end:]
+            try:
+                period = _event_period(query)
+            except ValueError as error:
+                return fields, {}, str(error), period
+        return fields, matches, "", period
+    rest = _EVENT_REQUEST.sub("", _BRIEF_REQUEST.sub("", query))
+    if re.search(r"\b(?:проект\w*|projects?)\b", query, re.I) or not (set(tokens(rest)) - _FILLER):
+        return fields, {}, "Уточните название или другое имя проекта и при необходимости его направление.", (None, None)
+    return None
+
+
+def asks_for_brief(query):
+    return bool(_EXPLICIT_BRIEF.search(query))
+
+
 def _related(term, words):
     if term in words:
         return True
@@ -94,7 +210,7 @@ def _best_line(record, details, interval, decisions, goals, named):
             return (len(details), 0, 1), record["field_lines"][field]
     best = None
     sections = []
-    for n, line in enumerate(record["body"].splitlines(), record["body_start"]):
+    for n, line in visible_body_lines(record):
         heading = _HEADING.match(line)
         if heading:
             level = len(heading[1])

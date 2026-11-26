@@ -38,10 +38,11 @@ class DirectionRoutingTests(unittest.TestCase):
     def new_direction(self, title, aliases=None):
         return storage.read_record(storage.create(self.root, "direction", title, aliases=aliases))["id"]
 
-    def test_rules_follow_direction_id_and_have_no_default_permissions(self):
+    def test_rules_follow_direction_id_and_default_to_project_history(self):
         rows = self.routing.rules()
         empty = next(row for row in rows if row["direction"] == self.other)
-        self.assertEqual((empty["revision"], empty["project_fields"], empty["person_visibilities"]), (None, [], []))
+        self.assertEqual((empty["revision"], empty["project_fields"], empty["person_visibilities"], empty["path"]),
+                         (None, ["event", "summary"], [], None))
         path = storage.find_record(self.root, self.direction)
         path.rename(path.with_name("Переименовано.md"))
         rule = next(row for row in self.routing.rules() if row["direction"] == self.direction)
@@ -69,6 +70,38 @@ class DirectionRoutingTests(unittest.TestCase):
         self.assertEqual(bad["project_fields"], [])
         with self.assertRaises(ValueError):
             self.routing.apply_project({**self.action, "rule_revision": bad["revision"]}, self.source)
+
+    def test_project_summary_permission_requires_events_in_same_rule(self):
+        path = self.root / self.rule["path"]
+        before = path.read_bytes()
+        data = {"direction": self.direction, "instructions": "Сверяй состояние проектов.",
+                "project_fields": ["status", "summary"], "person_visibilities": [],
+                "expected_revision": self.rule["revision"]}
+        with self.assertRaisesRegex(ValueError, "summary.*event"):
+            self.routing.save_rule(data)
+        self.assertEqual(path.read_bytes(), before)
+        saved = self.routing.save_rule({**data, "project_fields": ["event", "summary"]})
+        self.assertEqual(saved["project_fields"], ["event", "summary"])
+        events_only = self.routing.save_rule({**data, "project_fields": ["event"], "expected_revision": saved["revision"]})
+        self.assertEqual(events_only["project_fields"], ["event"])
+
+    def test_omitted_fields_inherit_while_explicit_permissions_remain_exact(self):
+        def save(area, **options):
+            return self.routing.save_rule({"direction": area, "instructions": "Новая инструкция.", **options})
+        default = save(self.other)
+        self.assertEqual((default["project_fields"], default["person_visibilities"]), (["event", "summary"], []))
+        legacy = save(self.direction, expected_revision=self.rule["revision"])
+        self.assertEqual((legacy["project_fields"], legacy["person_visibilities"]), (["status", "due"], ["shared"]))
+        disabled = save(self.other, project_fields=[], expected_revision=default["revision"])
+        updated = save(self.other, expected_revision=disabled["revision"])
+        self.assertEqual(updated["project_fields"], [])
+        path = self.root / updated["path"]
+        path.write_bytes(b"".join(row for row in path.read_bytes().splitlines(keepends=True)
+                                  if not row.startswith(b"project_fields:")))
+        old_bytes = path.read_bytes()
+        inherited = next(row for row in self.routing.rules() if row["direction"] == self.other)
+        self.assertEqual(inherited["project_fields"], ["event", "summary"])
+        self.assertEqual(path.read_bytes(), old_bytes)
 
     def test_shared_project_records_only_sourced_value_and_manual_history(self):
         old = self.project.read_bytes().replace(b"aliases: []", b"aliases: []\ncustom:\n  marker: keep")

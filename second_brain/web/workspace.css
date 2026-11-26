@@ -71,6 +71,19 @@ input[type=checkbox] { accent-color: var(--forest); }
 .record-source .source-lines { margin-top: 12px; }
 .record-source summary { overflow-wrap: anywhere; }
 .record-body { font: 400 15px/1.65 ui-monospace,Menlo,monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.project-updates { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,17rem),1fr)); gap: 18px 36px; margin-block: 18px; overflow-wrap: anywhere; }
+.project-updates .work-heading { font-size: 23px; margin: 0 0 6px; }
+.project-updates-heading { display: flex; gap: 12px; align-items: baseline; }
+.project-updates p { margin-block: 4px 8px; }
+.project-brief-text { font-size: 17px; line-height: 1.5; }
+.project-event-list { list-style: none; padding: 0; margin: 0 0 8px; }
+.project-event-list li { padding: 5px 0 9px 13px; border-left: 2px solid var(--work-stroke); }
+.project-event-date,.project-source { font-size: 13px; color: var(--muted); }
+.project-source { margin-block: 3px; }
+.project-source summary { cursor: pointer; }
+.project-source blockquote { margin: 6px 0; color: var(--work-ink); }
+.project-brief-editor { margin-block: 10px; }
+.project-brief-editor textarea { width: 100%; box-sizing: border-box; }
 .work-editor { display: grid; max-width: 830px; gap: 16px; }
 .editor-feedback:empty { display: none; }
 .editor-feedback .record-body { font-size: 13px; background: #f4f3e9; padding: 12px; max-height: 260px; overflow: auto; }

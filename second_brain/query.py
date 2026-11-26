@@ -6,6 +6,7 @@ import re
 from urllib.parse import quote
 
 from . import questions, storage
+from .search import visible_body_lines
 
 
 def _line_ref(text):
@@ -32,16 +33,21 @@ def _state_sources(root, path, record):
                       "lines": [{"n": number, "text": line}], "ref": ref, "href": _source_link(record, number, ref)}
 
 
-def source_fragment(root, path, record, number, *, linked=True):
+def source_fragment(root, path, record, number, *, linked=True, visible=None):
     """Build a citation from a single file revision, including its nearby lines."""
     first = record["body_start"]
     lines = record["body"].splitlines()
     index = number - first
     if not 0 <= index < len(lines):
         raise storage.ConflictError("Строка источника изменилась. Повторите вопрос.")
+    if visible is None and record["type"] == "project":
+        visible = dict(visible_body_lines(record))
+    if visible is not None and number not in visible:
+        raise storage.ConflictError("Строка источника изменилась. Повторите вопрос.")
     context = range(max(0, index - 2), min(len(lines), index + 3))
     source = {"path": path.relative_to(root).as_posix(), "start": number, "end": number,
-              "lines": [{"n": first + i, "text": lines[i]} for i in context]}
+              "lines": [{"n": first + i, "text": lines[i]} for i in context
+                        if visible is None or first + i in visible]}
     if linked:
         ref = _line_ref(lines[index])
         source.update(ref=ref, href=_source_link(record, number, ref))
@@ -74,6 +80,56 @@ class WorkspaceQuery:
             self.direction_ids is None or record["direction"] in self.direction_ids
         )
 
+    def _project_updates(self, request, scoped, limit, *, allow_state):
+        from . import project_updates
+        fields, names, message, period = request
+        briefs, events, gaps = [], [], []
+        total = 0
+        for record_id, label in names.items():
+            path, record = scoped[record_id]
+            updates = project_updates.read_record_updates(self.root, path, record, limit=limit,
+                                                          start=period[0], end=period[1])
+            warnings = updates.get("warnings", [])
+            if warnings:
+                gaps.append(f"«{label}» — часть журнала требует сверки. " + " ".join(warnings))
+            if "brief" in fields:
+                if updates["brief"]:
+                    briefs.append((record, path, label, "brief", updates["brief"]))
+                    total += 1
+                elif allow_state and (record.get("status") or record.get("next_step")):
+                    current = storage.read_record(path, include_raw=True)
+                    if current["revision"] != record["revision"]:
+                        raise storage.ConflictError("Карточка изменилась во время ответа. Повторите вопрос.")
+                    for kind, source in _state_sources(self.root, path, current):
+                        if kind in ("status", "next_step"):
+                            briefs.append((record, path, label, kind, {"text": current[kind], "source": source}))
+                            total += 1
+                elif not warnings:
+                    gaps.append(f"«{label}» — сводка «Коротко» пока не записана.")
+            if "event" in fields:
+                total += updates["total"]
+                events.extend((record, path, label, "event", entry) for entry in updates["events"])
+                if not updates["total"] and not warnings:
+                    gap = ("в журнале проекта нет датированных событий за указанный период" if any(period)
+                           else "в отдельном журнале проекта пока нет записей")
+                    gaps.append(f"«{label}» — {gap}.")
+        items = []
+        for record, path, label, kind, entry in (briefs + events)[:limit]:
+            source = entry.get("source")
+            if source is None:
+                number, end = entry["line"], entry.get("end", entry["line"])
+                source = source_fragment(self.root, path, record, number, visible=range(number, end + 1))
+                source["end"] = end
+                if entry.get("sources"):
+                    source["origin"] = next((s for s in entry["sources"] if s["available"]), entry["sources"][0])
+            item = {"id": record["id"], "title": record["title"], "label": label, "kind": kind,
+                    "supported": True, "answer": entry["text"], "source": source}
+            if kind == "event" and entry.get("date"):
+                item["date"] = entry["date"]
+            items.append(item)
+        return {"items": items, "total": total, "truncated": total > len(items),
+                "message": " ".join(filter(None, [message, *gaps]))}
+
     def ask(self, data):
         query = data.get("query")
         if not isinstance(query, str) or not query.strip() or len(query) > 1000:
@@ -97,6 +153,12 @@ class WorkspaceQuery:
         if selected and (not selected <= directions or
                          self.direction_ids is not None and not selected <= self.direction_ids):
             raise ValueError("Выбранное направление не входит в доступную область поиска.")
+        update_request = questions.project_update_request(query, (record for _, record in scoped.values()))
+        if update_request:
+            limit = data.get("limit", 5)
+            if type(limit) is not int or not 1 <= limit <= 20:
+                raise ValueError("Количество результатов должно быть от 1 до 20.")
+            return self._project_updates(update_request, scoped, limit, allow_state=not questions.asks_for_brief(query))
         if self.include_people:
             from .people import People
             scope = self.direction_ids if selected is None else selected
@@ -148,12 +210,11 @@ class WorkspaceQuery:
         for _, source in _state_sources(self.root, path, record):
             if source["ref"] == ref:
                 return record, source
-        first = record["body_start"]
-        body = record["body"].splitlines()
-        if not first <= number < first + len(body) or _line_ref(body[number - first]) != ref:
+        available = dict(visible_body_lines(record))
+        if number not in available or _line_ref(available[number]) != ref:
             # A file rename retains its ID. Inside a file, only follow identical, unique text.
-            matches = [n for n, line in enumerate(body, first) if _line_ref(line) == ref]
+            matches = [n for n, line in available.items() if _line_ref(line) == ref]
             if len(matches) != 1:
                 raise storage.ConflictError("Строка источника изменилась. Задайте вопрос ещё раз.")
             number = matches[0]
-        return record, source_fragment(self.root, path, record, number)
+        return record, source_fragment(self.root, path, record, number, visible=available)
