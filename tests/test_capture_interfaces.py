@@ -103,13 +103,24 @@ class CaptureInterfaces(unittest.TestCase):
             self.assertEqual((status, body), (200, raw))
             self.assertEqual(headers.get_content_type(), "application/octet-stream")
             self.assertTrue(headers["Content-Disposition"].startswith("attachment;"))
+            identity = request("GET", "/api/planning-vault")[1]
+            context = "embed=workspace&binding=" + identity["binding"]
+            status, original, headers = request("GET", "/original/" + text_rev + "?start=3&" + context, raw=True)
+            self.assertEqual(status, 200)
+            self.assertIn(b"/obsidian-workspace.js", original)
+            self.assertEqual(headers["Content-Security-Policy"], "frame-ancestors app://obsidian.md")
+            self.assertEqual(request("GET", target + "?" + context, raw=True)[:2], (200, raw))
+            self.assertEqual(request("GET", target + "?embed=workspace&binding=wrong", raw=True)[0], 409)
 
     def test_demo_has_no_capture_endpoints(self):
 
         # Demo has its own initialisation and must not accept working-vault uploads.
         self.root = self.root.parent / "Demo"
         with self.serving("demo") as request:
-            for endpoint in ("/api/inbox/text", "/api/inbox/file?name=note.pdf"):
+            for endpoint in ("/api/inbox/text", "/api/inbox/file?name=note.pdf", "/api/work/stop"):
                 code, _ = request("POST", endpoint, "{}", **{"Content-Type": "application/json"})
                 self.assertEqual(code, 404)
+            self.assertEqual(request("GET", "/api/planning-vault")[0], 404)
+            binding = sha256(str(self.root.resolve()).encode()).hexdigest()
+            self.assertEqual(request("GET", "/?embed=workspace&binding=" + binding)[0], 409)
         self.assertEqual(list((self.root / "Inbox").iterdir()), [])

@@ -1,3 +1,4 @@
+import {openObsidianSource} from "./obsidian-workspace.js";
 import {dateLabels, dateText, dayOf, isoDay, todayDay} from "./gantt-axis.js";
 import {dependencySection, scenarioForm} from "./gantt-dependencies.js";
 
@@ -17,7 +18,7 @@ export function cardLinks(ui, root) {
       event.preventDefault();
       try {
         const ref = source ? await ui.api("citation", {id: source.id, line: source.line, ref: source.ref}) : {path, start: line};
-        window.parent.postMessage({type: "second-brain-open-source", path: ref.path, line: ref.start}, "app://obsidian.md");
+        openObsidianSource(ref.path, ref.start);
       } catch (error) { a.after(ui.notice(error.message)); }
     });
     return a;
@@ -43,7 +44,7 @@ export function taskInspector(ui, settings) {
   const markdownLink = cardLinks(ui, root);
   const cardActions = node("div", "work-tools");
   cardActions.append(markdownLink("Открыть карточку в Obsidian ↗", task.path));
-  if (!embedded) cardActions.append(link("Показать связи", "#map?" + new URLSearchParams({id:task.id}), "text-link"));
+  if (!ui.compact) cardActions.append(link("Показать связи", "#map?" + new URLSearchParams({id:task.id}), "text-link"));
   identity.append(cardActions);
 
   function byline(entry) {

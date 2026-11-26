@@ -94,7 +94,7 @@ export function planningView(ui) {
         const rendered = key !== "status" && dayOf(value) !== null ? dateText(value) : value;
         const text = label + " · " + rendered;
         const field = plan.project.stateSources[key];
-        const item = ui.embedded ? cardLinks(ui, root)(text, plan.path, null, field?.line)
+        const item = ui.compact ? cardLinks(ui, root)(text, plan.path, null, field?.line)
           : link(text, "#record/" + encodeURIComponent(id) + "?" + new URLSearchParams({field: key}), "text-link");
         projectFacts.append(item);
       }
@@ -104,11 +104,11 @@ export function planningView(ui) {
     if (projectView) {
       connector.querySelector("h1").after(projectFacts);
       showProjectFacts();
-      const card = ui.embedded ? cardLinks(ui, root)("Карточка проекта ↗", plan.path)
+      const card = ui.compact ? cardLinks(ui, root)("Карточка проекта ↗", plan.path)
         : link("Карточка проекта", "#record/" + encodeURIComponent(id), "text-link");
       navigation.append(link("← Проектная деятельность", "#activity", "back-link"), card);
     } else navigation.append(link("← Все планы", "#plans", "back-link"), okrLink(ui, planId));
-    if (!ui.embedded) navigation.append(link("Показать связи", "#map?" + new URLSearchParams({id}), "text-link"));
+    if (!ui.compact) navigation.append(link("Показать связи", "#map?" + new URLSearchParams({id}), "text-link"));
     view.append(navigation, connector);
     if (!projectView) {
       const params = new URLSearchParams(location.hash.split("?")[1]);

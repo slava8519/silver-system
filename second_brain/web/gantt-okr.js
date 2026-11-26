@@ -84,7 +84,7 @@ async function boardPage(ui, view, planId, planURL) {
       if (options.directions.length) manage.append(objectiveEditor(ui, plan.id, options.directions, saved => created(saved, "Цель создана.")));
       else {
         const empty = node("p","gantt-context","Для первой цели нужно направление. ");
-        empty.append(ui.embedded ? "Создайте его в рабочей админке или через Codex." : link("Создать направление", "#new/direction","text-link"));
+        empty.append(ui.compact ? "Создайте его в рабочей админке или через Codex." : link("Создать направление", "#new/direction","text-link"));
         manage.append(empty);
       }
       if (objectives.length) manage.append(resultEditor(ui, objectives, options.tasks, saved => created(saved, "Ключевой результат создан.")));

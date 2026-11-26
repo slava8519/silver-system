@@ -1,3 +1,4 @@
+import { openObsidianSource, workspaceLink } from "./obsidian-workspace.js";
 import { cleanupNotice, mountCleanup } from "./demo-cleanup.js";
 import { intakeViews } from "./intake.js";
 import { planningView } from "./gantt.js";
@@ -8,8 +9,11 @@ import { relationMapHelp } from "./relation-map-help.js";
 (() => {
   const main = document.getElementById("content");
   const query = new URLSearchParams(location.search);
-  const embedded = query.get("embed") === "1";
-  document.body.classList.toggle("gantt-embed", embedded);
+  const compact = query.get("embed") === "1";
+  const fullWorkspace = query.get("embed") === "workspace";
+  const embedded = compact || fullWorkspace;
+  document.body.classList.toggle("gantt-embed", compact);
+  document.body.classList.toggle("workspace-embed", fullWorkspace);
   const typeNames = { direction: "Направление", project: "Проект", note: "Заметка" };
   const sections = { overview: "Обзор хранилища", records: "Карточки" };
   const fields = { status: "Статус", projectStart: "Согласованное начало", due: "Срок", nextStep: "Следующий шаг" };
@@ -24,7 +28,7 @@ import { relationMapHelp } from "./relation-map-help.js";
 
   function link(text, href, className = "") {
     const a = node("a", className, text);
-    a.href = href;
+    a.href = fullWorkspace ? workspaceLink(href, location.href) : href;
     return a;
   }
 
@@ -73,7 +77,7 @@ import { relationMapHelp } from "./relation-map-help.js";
     try {
       const file = payload instanceof Blob;
       const headers = {};
-      if (embedded && query.get("binding")) headers["X-Brain-Vault"] = query.get("binding");
+      if (embedded) headers["X-Brain-Vault"] = query.get("binding") || "";
       response = await fetch("/api/" + path, payload === undefined ? {cache: "no-store", headers} : {
         method: "POST", headers: {...headers, "Content-Type": file ? "application/octet-stream" : "application/json"},
         body: file ? payload : JSON.stringify(payload)
@@ -117,7 +121,7 @@ import { relationMapHelp } from "./relation-map-help.js";
   }
 
   const intake = intakeViews({node, link, button, option, section, labelled, notice, api, go, counted, pageHead, recordURL});
-  const planning = planningView({node, link, button, option, labelled, notice, api, go, counted, pageHead, embedded});
+  const planning = planningView({node, link, button, option, labelled, notice, api, go, counted, pageHead, embedded, compact});
 
   function fieldValue(record, key) {
     const value = record[key];
@@ -302,6 +306,8 @@ import { relationMapHelp } from "./relation-map-help.js";
     if (record.type === "project") panel.append(recordFacts(record));
     const selectedField = params.get("field");
     const selectedLine = record.fieldSources?.[selectedField]?.line;
+    if (fullWorkspace) panel.append(button("Открыть в Obsidian ↗", "button button-secondary",
+      () => openObsidianSource(record.path, selectedLine)));
     if (selectedField && !selectedLine) panel.append(node("p","muted","Поле сейчас не задано."));
     const sourceBox = node("details","record-source");
     sourceBox.open = Boolean(selectedLine);
@@ -360,14 +366,14 @@ import { relationMapHelp } from "./relation-map-help.js";
   async function editPage(id, kind, params, version) {
     let record = id ? await api("record?" + new URLSearchParams({id})) : null;
     if (version !== pageVersion) return;
-    main.append(pageHead(data.name, record ? "Редактировать карточку" : embedded ? "Создать проект" : "Новая карточка"));
+    main.append(pageHead(data.name, record ? "Редактировать карточку" : compact ? "Создать проект" : "Новая карточка"));
     const form = node("form","work-panel work-editor");
     const controls = {};
     const type = node("select");
     for (const [k,v] of Object.entries(typeNames)) type.append(option(k,v));
     type.value = record?.type || kind || "note";
     if (!type.value) type.value = "note";
-    type.disabled = Boolean(id) || embedded;
+    type.disabled = Boolean(id) || compact;
     form.append(labelled("Тип карточки", type));
     function input(key, name, value, tag = "input") {
       const field = node(tag);
@@ -409,7 +415,7 @@ import { relationMapHelp } from "./relation-map-help.js";
     const submit = node("button","button button-primary","Сохранить");
     submit.type = "submit";
     const actions = node("div","work-tools");
-    actions.append(submit, link("Отмена",id ? recordURL(id) : embedded ? "#activity" : "#records","button button-secondary"));
+    actions.append(submit, link("Отмена",id ? recordURL(id) : compact ? "#activity" : "#records","button button-secondary"));
     form.append(feedback, actions);
     main.append(form);
     const initial = () => Object.fromEntries(Object.entries(controls).map(([k,f]) => [k,f.value]));
@@ -461,7 +467,7 @@ import { relationMapHelp } from "./relation-map-help.js";
       submit.disabled = true;
       try {
         const saved = await api("records/" + (record ? "edit" : "create"), payload);
-        if (form.isConnected) go(embedded ? "#project-gantt/" + encodeURIComponent(saved.id) : recordURL(saved.id));
+        if (form.isConnected) go(compact ? "#project-gantt/" + encodeURIComponent(saved.id) : recordURL(saved.id));
       } catch (error) {
         if (!form.isConnected) return;
         feedback.append(notice(error.message));
@@ -475,7 +481,7 @@ import { relationMapHelp } from "./relation-map-help.js";
 
   async function render() {
     const version = ++pageVersion;
-    if (embedded && !/^#(?:plans$|plan\/|project-gantt\/|activity(?:-help)?(?:$|\?)|okr(?:$|[/?])|new\/project(?:$|\?))/.test(location.hash)) history.replaceState(null, "", "#plans");
+    if (compact && !/^#(?:plans$|plan\/|project-gantt\/|activity(?:-help)?(?:$|\?)|okr(?:$|[/?])|new\/project(?:$|\?))/.test(location.hash)) history.replaceState(null, "", "#plans");
     if (location.hash.split("?")[0] === "#ask") history.replaceState(null, "", "#overview");
     const raw = location.hash.slice(1) || "overview";
     const split = raw.indexOf("?");
@@ -493,7 +499,7 @@ import { relationMapHelp } from "./relation-map-help.js";
       } else if (page === "map") {
         const view = node("div", "relation-map");
         main.replaceChildren(view);
-        await mountRelationMap(view, {api, params, node, link, button, pageHead, counted});
+        await mountRelationMap(view, {api, params, node, link, button, pageHead, counted, embedded});
       } else if (page === "activity-help") {
         main.replaceChildren(activityHelp(params));
       } else if (page === "record" && recordId) {

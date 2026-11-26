@@ -1,3 +1,4 @@
+import {openObsidianSource} from "./obsidian-workspace.js";
 const pageSize = 5;
 const typeNames = {direction: "Направление", project: "Проект", note: "Заметка", task: "Задача", plan: "План"};
 const countForms = {
@@ -29,7 +30,7 @@ export function relationCardURL(card, root) {
   return markdown();
 }
 
-export async function mountRelationMap(view, {api, params, node, link, button, pageHead, counted}) {
+export async function mountRelationMap(view, {api, params, node, link, button, pageHead, counted, embedded}) {
   let state = new URLSearchParams(params);
   let serial = 0;
   let timer;
@@ -278,8 +279,13 @@ export async function mountRelationMap(view, {api, params, node, link, button, p
     const text = node("div");
     text.append(node("small", "rm-kind", annotation(card)), node("h2", "work-heading", card.title));
     const href = relationCardURL(card, result.root);
-    heading.append(text, link(href.startsWith("obsidian:") ? "Открыть карточку в Obsidian ↗" : "Открыть карточку",
-      href, "text-link rm-open"));
+    const markdown = href.startsWith("obsidian:");
+    const open = link(markdown ? "Открыть карточку в Obsidian ↗" : "Открыть карточку", href, "text-link rm-open");
+    if (embedded && markdown) open.addEventListener("click", event => {
+      event.preventDefault();
+      openObsidianSource(card.path);
+    });
+    heading.append(text, open);
     content.append(heading);
     if (!result.groups.length && card.status !== "unavailable") content.append(node("p", "muted",
       result.warningTotal ? "В прочитанных записях прямых связей этой карточки не найдено."

@@ -203,7 +203,7 @@ export async function cardPage(ui, view, id, planId, planURL) {
       for (const project of card.contextProjects) {
         const item = node("li");
         if (project.missing) item.textContent = "Карточка проекта недоступна · " + project.id;
-        else item.append(ui.embedded ? cardLinks(ui,card.root)(project.title,project.path)
+        else item.append(ui.compact ? cardLinks(ui,card.root)(project.title,project.path)
           : link(project.title,"#record/" + encodeURIComponent(project.id),"text-link"));
         list.append(item);
       }

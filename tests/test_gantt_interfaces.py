@@ -136,6 +136,29 @@ class GanttInterfaces(unittest.TestCase):
         self.assertEqual(self.request("/api/plan/due/preview", {"id": task["id"], "due": "2026-11-01"})[0], 400)
         self.assertEqual(self.request("/api/plan/due/preview", {"id": task["id"], "due": None})[0], 200)
 
+    def test_full_workspace_embed_pages_and_inbox_share_the_vault_binding(self):
+        identity = self.request("/api/planning-vault")[1]
+        self.assertTrue(identity["workspaceEmbed"])
+        binding = identity["binding"]
+        query = "embed=workspace&binding=" + binding
+        task = next(t for t in self.planning.tasks() if t["title"] == "Проверить восстановление базы")
+        href = Gantt(self.root).detail(task["id"])["latest"][0]["sources"][0]["href"].split("#")[0]
+        for page, expected in (("/", 200), ("/about.html", 200), (href, 200), ("/source/missing", 404),
+                               ("/evidence/missing/missing", 404)):
+            with self.subTest(page=page):
+                url = page + ("&" if "?" in page else "?") + query
+                status, html, headers = self.request(url)
+                self.assertEqual(status, expected)
+                self.assertEqual(headers.get("Content-Security-Policy"), "frame-ancestors app://obsidian.md")
+                if page.startswith(("/source/", "/evidence/")):
+                    self.assertIn("/obsidian-workspace.js", html)
+                self.assertEqual(self.request(url.replace(binding, "other"))[0], 409)
+                self.assertEqual(self.request(page)[2].get("X-Frame-Options"), "DENY")
+        self.assertEqual(self.request("/workspace.html?" + query)[2].get("X-Frame-Options"), "DENY")
+        content = {"title": "Работа", "text": "Из Obsidian"}
+        self.assertEqual(self.request("/api/inbox/text", content, extra={"X-Brain-Vault": "wrong"})[0], 409)
+        self.assertEqual(self.request("/api/inbox/text", content, extra={"X-Brain-Vault": binding})[0], 201)
+
     def test_work_created_in_project_is_live_without_a_period(self):
         project_path = storage.create(self.root, "project", "Длинный проект", due="2027-12-31")
         project = storage.read_record(project_path)["id"]

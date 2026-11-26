@@ -1,9 +1,11 @@
+import {workspaceLink} from "./obsidian-workspace.js";
+
 const endpoint = "demo-cleanup";
 
 function openWorkspace(result) {
   // A hash-only navigation would leave the old demo document and its scripts running.
   const receipt = {archive:result.archive || ""};
-  history.replaceState({...history.state, cleanupReceipt:receipt}, "", "/#overview");
+  history.replaceState({...history.state, cleanupReceipt:receipt}, "", workspaceLink("/#overview", location.href));
   location.reload();
 }
 

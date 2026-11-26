@@ -107,7 +107,7 @@ export async function activityCatalog(ui, view) {
 
   const workCount = n => counted(n,["работа","работы","работ"]);
   function cardLink(item) {
-    if (ui.embedded) return cardLinks(ui,data.root)("Карточка",item.path);
+    if (ui.compact) return cardLinks(ui,data.root)("Карточка",item.path);
     return link("Карточка","#record/" + encodeURIComponent(item.id),"text-link");
   }
   function facts(...parts) {

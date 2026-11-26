@@ -1,7 +1,9 @@
 """Local HTTP transport shared by the guide and the working vault."""
 
-from html import escape
+from contextlib import nullcontext
 import hashlib
+import hmac
+from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import mimetypes
@@ -9,7 +11,7 @@ from pathlib import Path
 import sqlite3
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
-from . import brief, demo_cleanup, storage
+from . import brief, demo_cleanup, storage, work_control
 from .batch import Batch
 from .capture import Capture, CaptureTooLarge, MAX_FILE_BYTES, MAX_TEXT_BYTES
 from .inbox import Inbox
@@ -18,19 +20,24 @@ from .routing import Routing
 WEB = Path(__file__).resolve().parent / "web"
 
 
-def _source_document(title, content, back="/#ask", label="Вопросы по направлениям"):
-    return f"""<!doctype html>
+class Handler(BaseHTTPRequestHandler):
+    def _source_document(self, title, content, back, label):
+        bridge = '<script type="module" src="/obsidian-workspace.js"></script>' if self.workspace_embed else ""
+        return f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{escape(title)} · Второй мозг</title><link rel="icon" href="data:,"><link rel="stylesheet" href="/app.css"></head>
+<title>{escape(title)} · Второй мозг</title><link rel="icon" href="data:,"><link rel="stylesheet" href="/app.css">{bridge}</head>
 <body><main><p><a class="back-link" href="{escape(back, quote=True)}">← {escape(label)}</a></p>
 <article class="panel"><h1 class="panel-heading">{escape(title)}</h1>{content}</article></main></body></html>""".encode()
 
-
-class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-    def _send(self, status, data, content_type="application/json; charset=utf-8", *, download=None, embed=False):
+    def _send(self, status, data, content_type="application/json; charset=utf-8", *, download=None):
+        if getattr(self, "embedded_page", False) and isinstance(data, dict) and "error" in data:
+            # Stale document links still offer navigation inside the Obsidian tab.
+            data = self._source_document("Не удалось открыть страницу", f"<p>{escape(data['error'])}</p>",
+                                         "/#overview", "Обзор хранилища")
+            content_type = "text/html; charset=utf-8"
         if not isinstance(data, bytes):
             data = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(status)
@@ -40,7 +47,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        if embed:
+        if getattr(self, "embedded_page", False) and content_type.startswith("text/html"):
             self.send_header("Content-Security-Policy", "frame-ancestors app://obsidian.md")
         else:
             self.send_header("X-Frame-Options", "DENY")
@@ -77,10 +84,17 @@ class Handler(BaseHTTPRequestHandler):
             guide = None
         self.mode = "demo" if guide is not None else "work"
         self.reader = guide if guide is not None else self.server.reader
-        embed = self.mode == "work" and path == "/" and params.get("embed") == "1"
-        binding = params.get("binding", "") if embed else self.headers.get("X-Brain-Vault")
-        if binding is not None and (self.mode != "work" or binding != self.server.vault_binding):
+        frame_mode = params.get("embed")
+        document = path in ("/", "/about.html") or path.startswith(("/source/", "/evidence/", "/original/"))
+        self.workspace_embed = not post and frame_mode == "workspace" and (document or path.startswith("/attachment/"))
+        compact = not post and self.mode == "work" and path == "/" and frame_mode == "1"
+        self.embedded_page = False
+        binding = self.headers.get("X-Brain-Vault")
+        if ((self.workspace_embed and not self.server.work_mode)
+                or ((self.workspace_embed or compact) and params.get("binding") != self.server.vault_binding)
+                or (binding is not None and (self.mode != "work" or binding != self.server.vault_binding))):
             raise storage.ConflictError("На этом порту открыто другое хранилище. Проверьте подключение в Obsidian.")
+        self.embedded_page = compact or (self.workspace_embed and document)
         if post:
             capture_text = self.mode == "work" and path == "/api/inbox/text"
             if self.mode == "work" and path == "/api/inbox/file":
@@ -101,6 +115,16 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(content)
             if not isinstance(data, dict):
                 raise ValueError("Ожидался объект JSON.")
+            if path == "/api/work/stop" and self.server.work_control:
+                proof = data.get("proof")
+                if (set(data) != {"instance", "proof"} or data["instance"] != self.server.work_control
+                        or binding != self.server.vault_binding or not isinstance(proof, str)
+                        or not proof.isascii() or not hmac.compare_digest(proof, self.server.stop_proof)):
+                    self._send(403, {"error": "Не удалось подтвердить остановку этой рабочей оболочки."})
+                    return
+                self._send(200, {"stopping": True})
+                self.server.shutdown()
+                return
             if path == "/api/demo-cleanup":
                 if set(data) != {"revision"} or not isinstance(data["revision"], str) or not data["revision"]:
                     raise ValueError("Для очистки подтвердите актуальный предпросмотр.")
@@ -189,8 +213,7 @@ class Handler(BaseHTTPRequestHandler):
                 file = (WEB / relative).resolve()
                 if (WEB in file.parents and file.is_file() and file.suffix.lower() in
                         {".html", ".css", ".js", ".jpg", ".jpeg", ".webp", ".png", ".svg", ".ico", ".woff2"}):
-                    self._send(200, file.read_bytes(), mimetypes.guess_type(file.name)[0] or "application/octet-stream",
-                               embed=embed)
+                    self._send(200, file.read_bytes(), mimetypes.guess_type(file.name)[0] or "application/octet-stream")
                     return
         self._send(404, {"error": "Страница не найдена."})
 
@@ -283,7 +306,10 @@ class Handler(BaseHTTPRequestHandler):
         root = self.server.vault.root
         identifier = data.get("id")
         if not post and path == "/api/planning-vault":
-            result = {"root": str(root), "name": root.name, "binding": self.server.vault_binding}
+            result = {"root": str(root), "name": root.name, "binding": self.server.vault_binding,
+                      "workspaceEmbed": self.server.work_mode}
+            if self.server.work_control:
+                result["workControl"] = self.server.work_control
         elif not post and path == "/api/plans":
             result = {"items": Planning(root).plans(), "name": root.name, "root": str(root)}
         elif not post and path == "/api/plan/activity":
@@ -578,7 +604,7 @@ class Handler(BaseHTTPRequestHandler):
             content = (f'<p class="source-path">{escape(source["path"])}</p>'
                        f'<p>Строка {source["start"]} · подтверждённая цитата</p>'
                        f'<div class="source-line highlight"><code>{escape(source["text"])}</code></div>')
-            self._send(200, _source_document("Источник факта", content, back, "Карточка человека"),
+            self._send(200, self._source_document("Источник факта", content, back, "Карточка человека"),
                        "text/html; charset=utf-8")
         elif path.startswith("/attachment/"):
             archived, raw = Inbox(self.server.vault.root).attachment(path[len("/attachment/"):])
@@ -597,7 +623,7 @@ class Handler(BaseHTTPRequestHandler):
             if "attachmentId" in original:
                 origin = f'<p><a href="/attachment/{original["attachmentId"]}" download>Скачать исходное вложение</a></p>'
             content = f'<p class="source-path">{escape(original["path"])}</p>{origin}{rows}<p>{" · ".join(pages)}</p>'
-            self._send(200, _source_document("Сохранённый оригинал", content, "/#inbox", "Входящие"),
+            self._send(200, self._source_document("Сохранённый оригинал", content, "/#inbox", "Входящие"),
                        "text/html; charset=utf-8")
         else:
             return False
@@ -614,7 +640,7 @@ class Handler(BaseHTTPRequestHandler):
             })
         except (ValueError, OSError) as error:
             message = str(error) if isinstance(error, ValueError) else "Исходный файл больше не доступен."
-            document = _source_document("Не удалось открыть источник", f"<p>{escape(message)}</p>", back, label)
+            document = self._source_document("Не удалось открыть источник", f"<p>{escape(message)}</p>", back, label)
             self._send(409 if isinstance(error, storage.ConflictError) else 404, document, "text/html; charset=utf-8")
             return
         rows = []
@@ -629,7 +655,7 @@ class Handler(BaseHTTPRequestHandler):
         content = context + "".join(rows) + "</div>"
         if "evidenceHref" in source:
             content += f'<p><a href="{escape(source["evidenceHref"], quote=True)}">Сверить с оригиналом</a></p>'
-        document = _source_document(record["title"], content, back, label)
+        document = self._source_document(record["title"], content, back, label)
         self._send(200, document, "text/html; charset=utf-8")
 
     def _handle(self, post):
@@ -653,6 +679,11 @@ class Handler(BaseHTTPRequestHandler):
         self._handle(True)
 
 
+class WorkHandler(Handler):
+    # Idle browser connections must release their workers during graceful shutdown.
+    timeout = 10
+
+
 def server(root, port=8765, *, mode="demo"):
     if not 0 <= port <= 65535:
         raise ValueError("Порт должен быть от 0 до 65535.")
@@ -672,15 +703,21 @@ def server(root, port=8765, *, mode="demo"):
     vault = Workspace(root)
     reader = WorkspaceQuery(root)
     people = People(root)
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), WorkHandler if mode == "work" else Handler)
+    if mode == "work":
+        httpd.daemon_threads = False  # server_close waits for accepted writes to finish.
     httpd.vault, httpd.reader, httpd.guide = vault, reader, guide
     httpd.people = people
     httpd.vault_binding = hashlib.sha256(str(vault.root).encode()).hexdigest()
+    httpd.work_mode = mode == "work"
+    httpd.work_control = None
     return httpd
 
 
 def serve(root, port, *, mode="demo"):
-    with server(root, port, mode=mode) as httpd:
+    with server(root, port, mode=mode) as httpd, (work_control.enable(httpd) if mode == "work" else nullcontext()):
+        if mode == "work":
+            work_control.watch_parent(httpd)
         print(f"http://127.0.0.1:{httpd.server_port}/", flush=True)
         try:
             httpd.serve_forever()

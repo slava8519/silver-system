@@ -235,3 +235,12 @@ input[type=checkbox] { accent-color: var(--forest); }
 @media (max-width: 1160px) {
   .masthead-utilities .local-status { display: none; }
 }
+
+.workspace-embed .masthead :is(.wordmark, .local-status) { display: none; }
+.workspace-embed .masthead .masthead-inner {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start;
+  gap: 0 16px; min-height: 48px; padding-block: 4px;
+}
+.workspace-embed .masthead nav { display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 0 14px; }
+.workspace-embed .masthead nav a { min-height: 36px; }
+.workspace-embed .masthead-utilities { margin: 0; }
