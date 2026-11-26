@@ -78,6 +78,10 @@ def command_line():
     read.add_argument("start", type=int)
     read.add_argument("end", type=int)
     commands.add_parser("rebuild", help="пересобрать поисковый индекс из файлов")
+    check = commands.add_parser("check", help="проверить целостность хранилища и связи с источниками")
+    check.add_argument("--limit", type=brief.result_limit, default=brief.DEFAULT_LIMIT,
+                       help="сколько замечаний показать после полного обхода (1–20)")
+    check.add_argument("--offset", type=brief.offset, default=0, help="сколько замечаний пропустить в выдаче")
     refresh = commands.add_parser("refresh-all", help="обновить все сводки и истории по подтверждённым записям")
     refresh.add_argument("--limit", type=brief.result_limit, default=brief.DEFAULT_LIMIT,
                          help="сколько замечаний показать после полного обхода (1–20)")
@@ -153,6 +157,9 @@ def run(args):
         return {"vault": str(root)}
     if not root.is_dir():
         raise FileNotFoundError(f"Хранилище не найдено: {root}")
+    if args.command == "check":
+        from .vault_check import check_vault
+        return check_vault(root, limit=args.limit, offset=args.offset)
     if getattr(args, "intake", False):
         return intake_cli.run(root, args)
     if getattr(args, "planning", False):
@@ -265,12 +272,12 @@ def main():
           or getattr(args, "planning", False) or getattr(args, "okr", False) or getattr(args, "teams", False)
           or getattr(args, "plan_tree", False) or getattr(args, "okr_progress", False)
           or getattr(args, "reports", False) or getattr(args, "project_activity", False)
-          or args.command in ("map", "weekly-review", "project-updates", "project-update", "refresh-all")
+          or args.command in ("map", "weekly-review", "project-updates", "project-update", "refresh-all", "check")
           or (args.command == "list" and isinstance(result, dict))):
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
     else:
         print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0
+    return 1 if args.command == "check" and result["status"] != "ok" else 0
 
 
 if __name__ == "__main__":

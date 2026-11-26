@@ -9,6 +9,7 @@ import { projectUpdatesPanel } from "./project-updates.js";
 import { mountDirectionStates } from "./direction-states.js";
 import { renderOverviewCommands } from "./overview-commands.js";
 import { reportsView } from "./reports.js";
+import { showVaultCheck } from "./vault-check.js";
 
 (() => {
   const main = document.getElementById("content");
@@ -138,7 +139,8 @@ import { reportsView } from "./reports.js";
   }
 
   async function overview() {
-    main.append(pageHead(data.name, sections.overview, button("Обновить обзор", "button button-secondary", render), newLink()));
+    main.append(pageHead(data.name, sections.overview, link("Проверить хранилище", "#check", "button button-secondary"),
+      button("Обновить обзор", "button button-secondary", render), newLink()));
     const receipt = cleanupNotice(node);
     if (receipt) main.append(receipt);
     const stats = node("nav", "work-stats");
@@ -468,11 +470,16 @@ import { reportsView } from "./reports.js";
     const [page, recordId] = route.split("/");
     const isActivity = ["activity", "activity-help", "okr", "project-gantt"].includes(page);
     const isPlan = page === "plans" || page === "plan" || isActivity;
-    const nav = page === "map-help" ? "map" : isActivity ? "activity" : isPlan ? "plans" : page === "person" ? "people" : ["new","edit","record"].includes(page) ? "records" : page;
+    const nav = page === "check" ? "overview" : page === "map-help" ? "map" : isActivity ? "activity" : isPlan ? "plans" : page === "person" ? "people" : ["new","edit","record"].includes(page) ? "records" : page;
     main.classList.toggle("planning-main", isPlan);
     main.setAttribute("aria-busy","true");
     try {
-      if (page === "reports") {
+      if (page === "check") {
+        const view = node("div");
+        main.replaceChildren(view);
+        await showVaultCheck(view, params, {node, link, button, section, api, pageHead, counted,
+          openSource: fullWorkspace ? openObsidianSource : null, rerun: () => go("#check")});
+      } else if (page === "reports") {
         const view = node("div", "reports-view");
         main.replaceChildren(view);
         await reports(view, recordId || "issues", params);
@@ -515,7 +522,10 @@ import { reportsView } from "./reports.js";
       });
       document.title = (main.querySelector("h1")?.textContent || "Хранилище") + " · Второй мозг";
     } catch (error) {
-      if (version === pageVersion) main.replaceChildren(notice(error.message),button("Повторить", "button button-secondary", render));
+      if (version === pageVersion) {
+        main.replaceChildren(notice(error.message),button("Повторить", "button button-secondary", render));
+        if (!compact && page !== "check") main.append(link("Проверить хранилище", "#check", "button button-secondary"));
+      }
     } finally {
       if (version === pageVersion) main.removeAttribute("aria-busy");
     }

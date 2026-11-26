@@ -252,6 +252,7 @@ class Inbox:
                 os.replace(staged, path)
 
     def process(self, data):
+        from .vault_check import check_after_intake
         if not isinstance(data, dict) or data.keys() != {"path", "revision", "person", "facts"}:
             raise ValueError("Передайте входящий файл, его прочитанную версию, участника и фрагменты.")
         with storage._write_lock(self.root):
@@ -260,7 +261,8 @@ class Inbox:
             digest = _digest(raw)
             if data["revision"] != digest:
                 raise storage.ConflictError("Входящий изменился. Перечитайте файл и снова выберите строки.")
-            return self._process_person(incoming, raw, digest, data["person"], data["facts"])
+            result = self._process_person(incoming, raw, digest, data["person"], data["facts"])
+        return {**result, "check": check_after_intake(self.root, digest)}
 
     def _process_person(self, incoming, raw, digest, choice, items):
         """Import one identity and its evidence under the caller's vault lock."""

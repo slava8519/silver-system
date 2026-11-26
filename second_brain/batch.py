@@ -400,6 +400,11 @@ class Batch:
         return result
 
     def apply(self, plan):
+        from .vault_check import check_after_intake
+        result = self._apply(plan)
+        return {**result, "check": check_after_intake(self.root, result["revision"])}
+
+    def _apply(self, plan):
         if (not isinstance(plan, dict) or plan.keys() - {"path", "revision", "actions", "triage_id"}
                 or not isinstance(plan.get("actions"), list) or not isinstance(plan.get("path"), str)):
             raise ValueError("Передайте path, revision и список actions для одного документа.")

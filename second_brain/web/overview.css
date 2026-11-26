@@ -108,6 +108,8 @@
 .overview-sidebar .overview-folders .work-heading { font: 600 15px/1.45 var(--sans); letter-spacing: 0; }
 .overview-sidebar .overview-folders .muted { font-size: 13px; }
 .overview-maintenance .button { font-size: 13px; }
+.vault-check-issues { padding-inline-start: 1.75em; }
+.vault-check-issues li { margin-block: 12px; }
 
 @media (max-width: 850px) {
   .overview-layout { grid-template-columns: minmax(0, 1fr); gap: 20px; }

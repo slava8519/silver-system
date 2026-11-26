@@ -1,6 +1,7 @@
 import { batchViews } from "./batch.js";
 import { capturePanel } from "./capture.js";
 import { teamViews } from "./teams.js";
+import { checkSummary, issueLocation } from "./vault-check.js";
 
 const kinds = {role: "Роль", fact: "Факт", observation: "Наблюдение"};
 const access = {personal: "Личное", shared: "Для общего поиска"};
@@ -260,7 +261,7 @@ export function intakeViews(helpers) {
       try {
         const result = await api("inbox/process", {path, revision, person, facts});
         if (view.isConnected) {
-          lastSave = {id:result.personId, personal:facts.some(f => f.visibility === "personal")};
+          lastSave = {id:result.personId, personal:facts.some(f => f.visibility === "personal"), check:result.check};
           go(personURL(result.personId));
         }
       } catch (error) {
@@ -294,6 +295,12 @@ export function intakeViews(helpers) {
     panel.append(list);
     if (lastSave && lastSave.id === id) {
       const status = node("p", "intake-success", lastSave.personal && !personal ? "Разбор сохранён. Личные сведения доступны по кнопке выше." : "Разбор сохранён.");
+      status.append(" " + checkSummary(lastSave.check, counted));
+      if (lastSave.check.status !== "ok") {
+        const first = lastSave.check.issues.items[0];
+        if (first) status.append(" " + first.message, node("code", "record-path", issueLocation(first)));
+        status.append(" ", link("Проверить хранилище", "#check", "text-link"));
+      }
       status.setAttribute("role", "status");
       panel.prepend(status);
       lastSave = null;
