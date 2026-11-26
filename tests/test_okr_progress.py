@@ -9,8 +9,10 @@ from pathlib import Path
 from second_brain import okr_progress_cli, storage
 from second_brain.cycles import Cycles
 from second_brain.gantt import Gantt
+from second_brain.inbox import Inbox
 from second_brain.project_gantt import ProjectGantt
 from second_brain.okr_progress import Progress, enrich_board, enrich_card
+from second_brain.refresh_planning import refresh_planning
 
 
 class WeightedProgress(unittest.TestCase):
@@ -234,6 +236,82 @@ class WeightedProgress(unittest.TestCase):
         self.assertTrue(self.service.readiness(task["id"])["items"][1]["source"]["unavailable"])
         self.assertEqual(self.cli("task-readiness", task["id"], "--limit", "1", "--offset", "2")["items"][0]["value"],
                          "20")
+
+    def archived(self, text):
+        relative = "Inbox/Заметки встречи.txt"
+        (self.root / relative).write_text(text, encoding="utf-8")
+        inbox = Inbox(self.root)
+        first = text.splitlines()[0]
+        return inbox.process({"path": relative, "revision": inbox.preview(relative)["revision"],
+                              "person": {"name": "Анна", "new": True},
+                              "facts": [{"kind": "observation", "direction": self.area, "visibility": "shared",
+                                         "line": 1, "text": first}]})["source"]
+
+    def test_archived_readiness_rollup_event_and_frozen_evidence(self):
+        first, second = self.task("Освещение"), self.task("Звук")
+        result = self.create_result([first, second])
+        self.weight(result, 1)
+        for task in (first, second):
+            self.weight(result, ".5", task)
+        day = "2026-11-23"
+        first_line = f"{day}. Анна проверила три сцены из четырёх."
+        second_line = f"{day}. Звук готов на 35%."
+        original = self.archived(f"{first_line}\n{second_line} Соседнее замечание.\n")
+        for task, value, kind, line, quote in ((first, 75, "estimate", 1, first_line),
+                                              (second, 35, "fact", 2, second_line)):
+            args = dict(value=value, kind=kind, date=day, actor="ai", revision=task["revision"],
+                        reason="Результат проверки сцены.", source={**original, "line": line, "quote": quote})
+            saved = self.service.set_readiness(task["id"], **args)
+            self.assertEqual(self.service.set_readiness(task["id"], **args)["revision"], saved["revision"])
+            reopened = self.service.readiness(task["id"])
+            source = reopened["readiness"]["source"]
+            self.assertEqual(reopened["items"][0]["source"], source)
+            self.assertEqual(source["quote"], quote)
+            self.assertEqual(source["href"], f'/original/{original["id"]}?start={line}')
+            self.assertNotIn("Соседнее замечание", str(reopened))
+        with patch.object(Inbox, "original_text", autospec=True, side_effect=Inbox.original_text) as read:
+            board = self.results.board(self.plan)
+            self.assertEqual(read.call_count, 1)
+        self.assertEqual(board["progress"]["value"], "55")
+        self.assertTrue(board["progress"]["hasEstimates"])
+        self.assertEqual(board["objectives"][0]["results"][0]["progress"]["value"], "55")
+        refreshed = refresh_planning(self.root)
+        self.assertEqual((refreshed["issues"], refreshed["eventsAdded"]), ([], 1))
+        gantt = Gantt(self.root)
+        self.assertEqual(gantt.detail(first["id"])["latest"], [])
+        event, = gantt.detail(second["id"])["latest"]
+        self.assertEqual(event["sources"][0], gantt.detail(second["id"])["readiness"]["source"])
+        self.assertEqual(refresh_planning(self.root)["changed"], 0)
+        cycles = Cycles(self.root)
+        cycles.close(self.plan, cycles.preview(self.plan)["revision"])
+        self.reading(first, 85, date="2026-11-24")
+        frozen = gantt.view(self.plan)
+        reading = next(t["readiness"] for t in frozen["items"] if t["id"] == first["id"])
+        self.assertEqual((reading["value"], reading["source"]["quote"]), ("75", first_line))
+        self.assertEqual(frozen["progress"]["value"], "55")
+
+    def test_archived_fact_checks_full_line_revision_path_and_unchanged_card(self):
+        task = self.task("Проверка")
+        original = self.archived("Встреча с Анной.\n2026-11-23. Готовность 30%.\n")
+        args = dict(value=30, kind="fact", date="2026-11-23", actor="ai", revision=task["revision"])
+        reference = {**original, "line": 2, "quote": "Готовность 30%."}
+        mismatches = [({"value": 75}, reference), ({"date": "2026-11-22"}, reference),
+                      ({}, {**reference, "ref": "0" * 64}), ({}, {**reference, "id": "0" * 64}),
+                      ({}, {**reference, "quote": "90%"}), ({}, {**reference, "line": 3}),
+                      ({}, {**reference, "path": original["path"][:-4] + ".md"}),
+                      ({}, {**reference, "path": "Sources/Originals/../Processed/не источник.md"}),
+                      ({}, {**reference, "path": original["path"][:-4] + ".pdf"})]
+        for updates, source in mismatches:
+            with self.subTest(updates=updates, source=source), self.assertRaises(ValueError):
+                self.service.set_readiness(task["id"], **{**args, **updates}, source=source)
+        self.assertEqual(self.service.readiness(task["id"])["revision"], task["revision"])
+        saved = self.service.set_readiness(task["id"], **args, source=reference)
+        # The cited line still matches; an edit elsewhere nevertheless invalidates the archived revision.
+        (self.root / original["path"]).write_text("Другая встреча.\n2026-11-23. Готовность 30%.\n")
+        self.assertTrue(self.service.readiness(task["id"])["readiness"]["source"]["unavailable"])
+        with self.assertRaises(storage.ConflictError):
+            self.service.set_readiness(task["id"], **args, source=reference)
+        self.assertEqual(self.service.readiness(task["id"])["revision"], saved["revision"])
 
     def test_parallel_writers_respect_sibling_weights_and_owner_task_revision(self):
         a, b = self.create_result([], "Одна серия"), self.create_result([], "Другая серия")

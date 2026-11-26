@@ -1,6 +1,7 @@
 import {dateLabels, dateText, dayOf} from "./gantt-axis.js";
 import {cardLinks} from "./gantt-detail.js";
 import {readinessText} from "./gantt-detail-text.js";
+import {evidence} from "./gantt-okr-source.js";
 
 const stamp = new Intl.DateTimeFormat("ru-RU", {dateStyle: "long", timeStyle: "short"});
 
@@ -134,7 +135,10 @@ export function snapshotInspector(ui, {plan, row, root, urlFor, deselect}) {
   else {
     const dates = node("dl", "gantt-facts");
     if (row.readiness?.value != null) {
-      dates.append(node("dt", "", "Готовность при закрытии"), node("dd", "", readinessText(row.readiness)));
+      const reading = node("dd", "", readinessText(row.readiness));
+      if (row.readiness.reason) reading.append(node("p", "gantt-context", row.readiness.reason));
+      if (row.readiness.source) reading.append(evidence(ui, root, row.readiness.source));
+      dates.append(node("dt", "", "Готовность при закрытии"), reading);
     }
     for (const [field, label] of Object.entries(dateLabels)) {
       if (field === "start" && row.kind === "milestone") continue;

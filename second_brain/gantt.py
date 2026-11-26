@@ -99,7 +99,7 @@ def _entries(lines, field, *, code=None, base=1, bounds=None):
                     raise ValueError
                 entry = {"text": text, "author": author, "manual": author == "manual",
                          "updated": None if modified else meta["updated"],
-                         "sources": [] if modified else [linked_source(s) for s in meta["sources"]]}
+                         "sources": [] if modified else [linked_source(s, allow_originals=True) for s in meta["sources"]]}
                 if not modified and author == "ai" and meta.get("acceptedByOwner") is True:
                     entry.update(manual=True, acceptedByOwner=True)
                 if field == "latest":
@@ -318,7 +318,7 @@ class Gantt:
             # Existing evidence remains traceable through its digest even after a note moves.
             sources = [{k: v for k, v in src.items() if k != "href"} for src in previous["sources"]]
         else:
-            sources = verify_sources(self.root, data.get("sources", []))
+            sources = verify_sources(self.root, data.get("sources", []), allow_originals=True)
         if actor == "ai" and not sources:
             raise ValueError("Для записи ИИ требуется ссылка на строку источника.")
         entry = {"text": text, "author": actor, "manual": actor == "manual", "sources": sources, "updated": updated}

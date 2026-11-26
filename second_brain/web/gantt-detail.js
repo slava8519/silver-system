@@ -26,8 +26,31 @@ export function cardLinks(ui, root) {
   };
 }
 
+export function evidenceLink(ui, root, source, label) {
+  if (source.unavailable) return null;
+  let href;
+  if (source.path.startsWith("Sources/Originals/")) {
+    const match = /^Sources\/Originals\/([a-f0-9]{64})\.(?:md|txt)$/.exec(source.path);
+    if (!match || source.id !== match[1] || !Number.isSafeInteger(source.line) || source.line < 1) return null;
+    href = `/original/${source.id}?start=${source.line}`;
+    label = "Открыть оригинал";
+  } else if (ui.embedded) {
+    return cardLinks(ui, root)(label || "Открыть строку в Obsidian ↗", source.path, source);
+  } else {
+    if (!source.href) return null;
+    let url;
+    try { url = new URL(source.href, location.href); } catch { return null; }
+    if (url.origin !== location.origin || !url.pathname.startsWith("/source/")) return null;
+    href = url.href;
+  }
+  const a = ui.link(label || "Проверить источник ↗", href, "text-link");
+  // The Obsidian iframe can navigate to the verified original but cannot open a popup.
+  if (!ui.embedded) { a.target = "_blank"; a.rel = "noopener"; }
+  return a;
+}
+
 export function taskInspector(ui, settings) {
-  const {node, button, labelled, link, api, notice, embedded} = ui;
+  const {node, button, labelled, link, api, notice} = ui;
   const {task, row, root, refresh, deselect} = settings;
   const milestone = row.kind === "milestone";
   const panel = node("section", "gantt-inspector");
@@ -62,19 +85,14 @@ export function taskInspector(ui, settings) {
     const sources = node("div", "gantt-evidence");
     for (const source of entry.sources || []) {
       const details = node("details");
-      const name = source.path.split("/").pop().replace(/\.md$/i, "");
+      const name = source.path.startsWith("Sources/Originals/") ? "Оригинал" : source.path.split("/").pop().replace(/\.md$/i, "");
       const summary = node("summary", "", name + " · строка " + source.line);
       summary.title = source.path;
       details.append(summary);
       if (source.quote) details.append(node("blockquote", "", source.quote));
       if (source.unavailable) details.append(node("p", "gantt-byline", "Исходная строка недоступна."));
-      else if (embedded) details.append(markdownLink("Открыть строку в Obsidian ↗", source.path, source));
-      else if (/^\/(?:source|original)\//.test(source.href || "") && !source.href.includes("\\")) {
-        const a = link("Проверить источник ↗", source.href, "text-link");
-        a.target = "_blank";
-        a.rel = "noopener";
-        details.append(a);
-      }
+      const a = evidenceLink(ui, root, source);
+      if (a) details.append(a);
       sources.append(details);
     }
     return sources;

@@ -4,10 +4,8 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
-import re
 
 from . import evidence, storage
-from .inbox import Inbox
 from .markdown_sections import FENCE, fenced_lines
 from .planning import validate_due
 
@@ -19,7 +17,6 @@ _END = "<!-- /brain-project-entry -->"
 _SECTION_END = "<!-- /brain-project-section -->"
 _HISTORY = "<!-- brain-project-brief-change: "
 _HISTORY_TITLE = "## История сводки проекта"
-_ORIGINAL = re.compile(r"Sources/Originals/([0-9a-f]{64})\.(?:txt|md)\Z")
 
 
 def _digest(text):
@@ -29,28 +26,11 @@ def _digest(text):
 def _source(root, item, *, resolve=False):
     if not isinstance(item, dict) or not isinstance(item.get("path"), str):
         raise ValueError("Укажите путь, строку и цитату источника проекта.")
-    match = _ORIGINAL.fullmatch(item["path"])
-    if match:
-        identifier = match[1]
-        number = item.get("line")
-        if type(number) is not int or number < 1:
-            raise ValueError("Укажите положительный номер строки оригинала.")
-        line = Inbox(root).evidence(identifier, number)
-        quote = item.get("quote")
-        fingerprint = _digest(line["text"])
-        if (line["path"] != item["path"] or not isinstance(quote, str) or not quote.strip()
-                or len(quote) > 600 or quote not in line["text"] or item.get("ref", fingerprint) != fingerprint
-                or item.get("id", identifier) != identifier):
-            raise storage.ConflictError("Проверьте исходный фрагмент и точную цитату.")
-        result = {"id": identifier, "path": item["path"], "line": number, "quote": quote, "ref": fingerprint}
-        if resolve:
-            result["href"] = f"/original/{identifier}?start={number}"
-        return result
     if resolve:
-        return evidence.resolve_source(root, item)
+        return evidence.resolve_source(root, item, allow_originals=True)
     if not isinstance(item.get("quote"), str) or not item["quote"].strip():
         raise ValueError("Укажите точную цитату источника.")
-    return evidence.verify_source_line(root, item)[0]
+    return evidence.verify_source_line(root, item, allow_originals=True)[0]
 
 
 def _sources(root, values, actor):

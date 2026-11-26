@@ -23,6 +23,8 @@ def add_commands(commands):
         ready.add_argument("--" + field)
     ready.add_argument("--line", type=int)
     ready.add_argument("--kind", choices=("fact", "estimate"))
+    ready.add_argument("--count", type=int, nargs=2, metavar=("DONE", "TOTAL"),
+                       help="подтвердить фактический процент счётчиком из цитаты")
     ready.add_argument("--actor", choices=("ai", "manual"))
     ready.add_argument("--owner-confirmed", action="store_true")
     _page_arguments(ready)
@@ -102,7 +104,7 @@ def run(root, args):
         return service.set_weight(args.result, task_id=args.task, weight=args.value, revision=args.revision)
     if args.value is None:
         if any(getattr(args, key) is not None for key in ("date", "revision", "kind", "actor", "reason", "source",
-                                                         "line", "quote")) or args.owner_confirmed:
+                                                         "line", "quote", "count")) or args.owner_confirmed:
             raise ValueError("Для изменения готовности укажите --value.")
         page = service.readiness(args.task, limit=args.limit, offset=args.offset)
         return {**_short_card(page), "readiness": _readiness(page["readiness"]),
@@ -116,5 +118,5 @@ def run(root, args):
             source["quote"] = args.quote
     result = service.set_readiness(args.task, value=args.value, date=args.date, kind=args.kind, revision=args.revision,
                                    actor=args.actor or "ai", reason=args.reason, source=source,
-                                   owner_confirmed=args.owner_confirmed)
+                                   owner_confirmed=args.owner_confirmed, count=args.count)
     return {**_short_card(result), "readiness": _readiness(result["readiness"])}

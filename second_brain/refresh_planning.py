@@ -5,8 +5,8 @@ from datetime import datetime
 from . import evidence, storage
 from .cycles import CYCLE_SEAL
 from .gantt import Gantt, _changes, _row_fields, _source_keys
-from .okr import KeyResults, _check_quote
-from .okr_progress import _readings
+from .okr import KeyResults
+from .okr_progress import _check_readiness_fact, _readings
 from .schedule import schedule_history
 
 
@@ -19,7 +19,7 @@ def _dated_facts(record, relative):
     for day, reading in effective.items():
         source = reading["source"]
         if reading["kind"] == "fact" and source and evidence.dated_quote(day, [source]):
-            _check_quote(reading["value"], "%", day, source["quote"])
+            _check_readiness_fact(reading["value"], day, source["quote"], count=reading.get("count"))
             facts.append((day, source["quote"], [source]))
 
     dates = schedule_history(record, relative)
@@ -88,7 +88,7 @@ def _refresh_task(gantt, record, relative, report, source_cache):
             key = (ref["id"], ref["path"], ref["line"], ref["ref"], ref["quote"])
             if key not in source_cache:
                 try:
-                    source_cache[key] = evidence.resolve_source(gantt.root, ref)
+                    source_cache[key] = evidence.resolve_source(gantt.root, ref, allow_originals=True)
                 except (ValueError, OSError):
                     source_cache[key] = None
             if source_cache[key] is None:

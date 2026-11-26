@@ -1,22 +1,14 @@
-import {cardLinks} from "./gantt-detail.js";
+import {evidenceLink} from "./gantt-detail.js";
 
 export function evidence(ui, root, source) {
-  const {node, link} = ui;
+  const {node} = ui;
   const box = node("details", "okr-proof");
   const label = source.path + " · строка " + source.line;
   box.append(node("summary", "text-link", source.unavailable ? "Сохранённая цитата · строка недоступна" : "Источник · строка " + source.line));
   box.append(node("blockquote", "", source.quote));
   if (source.unavailable) box.append(node("small", "record-path", label));
-  else if (ui.embedded) box.append(cardLinks(ui, root)(label, source.path, source));
-  else if (source.href) {
-    const url = new URL(source.href, location.href);
-    if (url.origin === location.origin && url.pathname.startsWith("/source/")) {
-      const a = link(label, url.href, "text-link");
-      a.target = "_blank";
-      a.rel = "noopener";
-      box.append(a);
-    }
-  }
+  const a = evidenceLink(ui, root, source, label);
+  if (a) box.append(a);
   return box;
 }
 

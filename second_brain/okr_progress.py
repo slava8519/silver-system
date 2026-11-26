@@ -1,11 +1,13 @@
 """Optional edge weights and sourced readiness of canonical task cards."""
 
 from decimal import Decimal, Inexact, localcontext
+from fractions import Fraction
 import hashlib
 import json
+import re
 
 from . import brief, evidence, planning, storage
-from .okr import KeyResults, _check_quote, _measured_date, _number, _text, _valid_revision
+from .okr import KeyResults, _GROUPED_INTEGER, _UNGROUP, _check_date, _check_quote, _measured_date, _number, _text, _valid_revision
 
 
 _WEIGHT = " <!-- okr-edge-weight: "
@@ -14,6 +16,9 @@ _KIND = {"fact": "факт", "estimate": "оценка"}
 _TASK_FORMULA = "Σ(вес задачи × готовность задачи)"
 _GOAL_FORMULA = "Σ(вес КР × готовность КР)"
 _PLAN_FORMULA = "Среднее арифметическое готовности всех целей"
+_INTEGER = rf"(?:{_GROUPED_INTEGER}|[0-9]+)"
+_COUNT_PAIR = re.compile(rf"(?<![\w.,:+−/\-])({_INTEGER})(?:\s*/\s*|\s+из\s+)({_INTEGER})"
+                         r"(?![\w/:%+−-]|[.,][0-9])", re.IGNORECASE)
 
 
 def _bounded_number(value, maximum):
@@ -21,6 +26,35 @@ def _bounded_number(value, maximum):
     if not 0 <= Decimal(number) <= maximum:
         raise ValueError(f"Укажите значение от 0 до {maximum}.")
     return number
+
+
+def _check_readiness_fact(value, date, quote, *, count=None, full_line=None):
+    if count is None:
+        return _check_quote(value, "%", date, quote, full_line=full_line)
+    if not isinstance(count, (list, tuple)) or len(count) != 2 or any(type(n) is not int for n in count):
+        raise ValueError("Укажите целые числа выполненных работ и общего количества.")
+    done, total = count
+    if total <= 0 or not 0 <= done <= total:
+        raise ValueError("Должно быть 0 ≤ выполнено ≤ всего, всего больше нуля.")
+    supplied = Fraction(value)
+    if 0 < done < total and supplied in (0, 100):
+        raise ValueError("Для незавершённого ненулевого счётчика укажите процент между 0 и 100.")
+    # Round half up at hundredths or at the higher precision supplied for a small remainder.
+    scale = 10 ** max(2, len(value.partition(".")[2]))
+    units, remainder = divmod(done * 100 * scale, total)
+    rounded = Fraction(units + (2 * remainder >= total), scale)
+    if supplied != rounded:
+        raise ValueError("Процент готовности расходится с отношением выполнено / всего.")
+    line = quote if full_line is None else full_line
+    dates = _check_date(date, line)
+    for pair in _COUNT_PAIR.finditer(line):
+        if any(start < pair.end() and pair.start() < end for start, end in dates):
+            continue
+        if [text.translate(_UNGROUP).lstrip("0") or "0" for text in pair.groups()] != [str(done), str(total)]:
+            continue
+        if any(span.start() <= pair.start() and pair.end() <= span.end() for span in re.finditer(re.escape(quote), line)):
+            return
+    raise ValueError("В цитате нужна целая пара «выполнено из всего» или «выполнено/всего».")
 
 
 def _marked(record, marker):
@@ -75,11 +109,15 @@ def _readings(record):
             reason = data["reason"]
             if reason is not None:
                 _text(reason, "основание")
+            owner_basis = reason and (data["actor"] == "manual" or data["ownerConfirmed"])
+            count = data.get("count")
+            if count is not None and (data["kind"] != "fact" or data["source"] is None):
+                raise ValueError
             if data["source"] is not None:
-                data["source"] = evidence.linked_source(data["source"])
-                if data["kind"] == "fact" and not (reason and (data["actor"] == "manual" or data["ownerConfirmed"])):
-                    _check_quote(value, "%", date, data["source"]["quote"])
-            elif not (reason and (data["actor"] == "manual" or data["ownerConfirmed"])):
+                data["source"] = evidence.linked_source(data["source"], allow_originals=True)
+                if data["kind"] == "fact" and (count is not None or not owner_basis):
+                    _check_readiness_fact(value, date, data["source"]["quote"], count=count)
+            elif not owner_basis:
                 raise ValueError
             rows.append({**data, "line": record["body_start"] + index})
         except (KeyError, TypeError, ValueError) as error:
@@ -93,7 +131,7 @@ def _resolve(root, row, *, sources=None):
     if row["source"] is None:
         return dict(row)
     try:
-        source = evidence.resolve_source(root, row["source"], records=sources)
+        source = evidence.resolve_source(root, row["source"], records=sources, allow_originals=True)
     except (ValueError, OSError):
         source = {**row["source"], "unavailable": True}
     return {**row, "source": source}
@@ -318,7 +356,7 @@ class Progress:
                     "items": [_resolve(self.root, row) for row in page["items"]]}
 
     def set_readiness(self, task_id, *, value, date, kind, revision, actor, reason=None, source=None,
-                      owner_confirmed=False):
+                      owner_confirmed=False, count=None):
         _valid_revision(revision)
         value = _bounded_number(value, 100)
         date = _measured_date(date)
@@ -329,22 +367,26 @@ class Progress:
         manual = actor == "manual" or owner_confirmed
         if source is None and not (manual and reason):
             raise ValueError("Укажите источник или явное основание владельца.")
+        if count is not None and (kind != "fact" or source is None):
+            raise ValueError("Для счётчика нужны вид fact и цитата источника.")
         with storage._write_lock(self.root):
             path, original, record, header = self.planning._find("task", task_id)
             if source is not None:
-                source, full_line = evidence.verify_source_line(self.root, source)
-                if kind == "fact" and not (manual and reason):
-                    _check_quote(value, "%", date, source["quote"], full_line=full_line)
+                source, full_line = evidence.verify_source_line(self.root, source, allow_originals=True)
+                if kind == "fact" and (count is not None or not (manual and reason)):
+                    _check_readiness_fact(value, date, source["quote"], count=count, full_line=full_line)
             decision = {"value": value, "date": date, "kind": kind, "actor": actor, "ownerConfirmed": owner_confirmed,
                         "reason": reason, "source": source}
+            if count is not None:
+                decision["count"] = list(count)
             rows = _readings(record)
             latest = rows[-1] if rows else None
             same_day = next((r for r in reversed(rows) if r["date"] == date), None)
             if same_day:
-                previous = {k: same_day[k] for k in decision}
+                previous = {k: same_day.get(k) for k in decision}
                 if previous["source"]:
                     previous["source"] = {k: v for k, v in previous["source"].items() if k != "href"}
-                if previous == decision:
+                if previous == decision and same_day.get("count") == decision.get("count"):
                     return {**self.planning._summary(path, record), "readiness": _resolve(self.root, latest)}
             if revision != record["revision"]:
                 raise storage.ConflictError("Карточка задачи изменилась. Перечитайте её готовность.")

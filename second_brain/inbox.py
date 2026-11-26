@@ -296,15 +296,19 @@ class Inbox:
                 "personId": person["id"], "person": {key: person[key] for key in ("id", "name", "path")},
                 "facts": len(facts)}
 
-    def original(self, source_id, start=1, limit=30):
-        """Explicit owner view of the archived document, including any personal passages."""
+    def original_text(self, source_id):
+        """Return the original path and decoded lines after validating the archived bytes."""
         path = self._original(source_id)
         if path.suffix not in EXTENSIONS:
             raise ValueError("Для просмотра архивного вложения откройте исходный файл.")
         raw = path.read_bytes()
         if _digest(raw) != source_id:
             raise storage.ConflictError("Содержимое оригинала не совпадает с сохранённой версией.")
-        lines = _lines(raw)
+        return path, _lines(raw)
+
+    def original(self, source_id, start=1, limit=30):
+        """Explicit owner view of the archived document, including any personal passages."""
+        path, lines = self.original_text(source_id)
         page = _page(lines, start, limit)
         attachment = _TRANSCRIPT_HEADING.fullmatch(lines[0]) if lines else None
         if attachment:
