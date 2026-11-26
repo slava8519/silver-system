@@ -6,7 +6,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from second_brain import storage
+from second_brain import demo_cleanup, storage
 from second_brain.examples import create_examples
 from second_brain.inbox import Inbox
 from second_brain.routing import Routing
@@ -96,6 +96,7 @@ def generate(destination, *, with_teams=False):
             (root / "Inbox" / name).write_text(content, encoding="utf-8")
         if with_teams:
             _add_teams(root, directions)
+        demo_cleanup.record_seed(root)
         if destination.exists() or destination.is_symlink():
             raise FileExistsError(f"Каталог учебного хранилища уже занят: {destination}")
         root.rename(destination)

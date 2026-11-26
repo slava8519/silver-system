@@ -30,8 +30,20 @@ export function dateText(value) {
 export function shortDay(day) { return dayMonth.format(day * dayMs); }
 export function isoDay(day) { return new Date(day * dayMs).toISOString().slice(0, 10); }
 
-export function fitWindow(rows, today) {
+export function calendarYear(day, offset = 0) {
+  const year = new Date(day * dayMs).getUTCFullYear() + offset;
+  const start = Date.UTC(year, 0, 1) / dayMs;
+  return {start, size: Date.UTC(year + 1, 0, 1) / dayMs - start, zoom: "year"};
+}
+
+export function fitWindow(rows, today, project) {
   let first = Infinity, last = -Infinity;
+  if (project) {
+    for (const boundary of [project.projectStart, project.due]) {
+      const day = dayOf(boundary);
+      if (day !== null) { first = Math.min(first, day); last = Math.max(last, day); }
+    }
+  }
   for (const row of rows) {
     for (const field of Object.keys(dateLabels)) {
       if (row.kind === "milestone" && field === "start") continue;
@@ -45,7 +57,15 @@ export function fitWindow(rows, today) {
   return {start, size: Math.max(14, last - start + padding + 1)};
 }
 
-export function ticks({start, size}) {
+export function ticks({start, size, zoom}) {
+  if (zoom === "year") {
+    const year = new Date(start * dayMs).getUTCFullYear();
+    const monthName = print({month: "short"});
+    return Array.from({length: 12}, (_, month) => {
+      const day = Date.UTC(year, month, 1) / dayMs;
+      return {day, at: (day - start) / size, label: monthName.format(day * dayMs)};
+    });
+  }
   const step = [1, 2, 3, 7, 14, 28, 60, 90, 180, 365].find(number => size / number <= 10) || Math.ceil(size / 8);
   const ticks = [];
   for (let day = start; day < start + size; day += step) {

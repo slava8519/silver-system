@@ -238,3 +238,20 @@ a.back-link:hover { text-decoration: underline; }
   .masthead nav { grid-area: navigation; }
   .masthead nav a { min-height: 38px; }
 }
+
+.hero-actions, .cleanup-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+.cleanup-dialog {
+  width: min(460px,calc(100% - 32px)); max-height: calc(100dvh - 32px); padding: clamp(20px,3vw,30px);
+  border: 1px solid #bdc8b6; border-radius: 13px; background: var(--card); color: var(--ink);
+  box-shadow: 0 12px 48px #24392d35; overflow: auto;
+}
+.cleanup-dialog::backdrop { background: #1e3124a8; }
+.cleanup-dialog h2 { margin: 0 0 13px; font: 500 clamp(26px,3vw,34px)/1.14 var(--serif); letter-spacing: -.035em; }
+.cleanup-dialog p { margin: 9px 0; }
+.cleanup-counts { margin: 16px 0; border-block: 1px solid var(--line); }
+.cleanup-counts > div { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; padding: 6px 0; }
+.cleanup-counts dd { margin: 0; font-weight: 650; font-variant-numeric: tabular-nums; }
+.cleanup-status:empty { display: none; }
+.cleanup-actions { margin-top: 16px; }
+.cleanup-receipt { margin: 0 0 16px; padding: 12px 16px; color: var(--forest); background: #eaf0e2; border-radius: 8px; overflow-wrap: anywhere; }
+.cleanup-receipt p { margin: 4px 0 0; font-size: 14px; }

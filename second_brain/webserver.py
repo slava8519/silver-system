@@ -9,7 +9,7 @@ from pathlib import Path
 import sqlite3
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
-from . import brief, storage
+from . import brief, demo_cleanup, storage
 from .batch import Batch
 from .capture import Capture, CaptureTooLarge, MAX_FILE_BYTES, MAX_TEXT_BYTES
 from .inbox import Inbox
@@ -71,13 +71,19 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         path = url.path
         params = {key: values[0] for key, values in parse_qs(url.query).items()}
-        embed = self.server.mode == "work" and path == "/" and params.get("embed") == "1"
+        # Each request uses one interface. A separate CLI process can also finish the guide.
+        guide = self.server.guide
+        if guide is not None and demo_cleanup.is_cleaned(self.server.vault.root):
+            guide = None
+        self.mode = "demo" if guide is not None else "work"
+        self.reader = guide if guide is not None else self.server.reader
+        embed = self.mode == "work" and path == "/" and params.get("embed") == "1"
         binding = params.get("binding", "") if embed else self.headers.get("X-Brain-Vault")
-        if binding is not None and binding != getattr(self.server, "vault_binding", None):
+        if binding is not None and (self.mode != "work" or binding != self.server.vault_binding):
             raise storage.ConflictError("На этом порту открыто другое хранилище. Проверьте подключение в Obsidian.")
         if post:
-            capture_text = self.server.mode == "work" and path == "/api/inbox/text"
-            if self.server.mode == "work" and path == "/api/inbox/file":
+            capture_text = self.mode == "work" and path == "/api/inbox/text"
+            if self.mode == "work" and path == "/api/inbox/file":
                 if self.headers.get_content_type() != "application/octet-stream":
                     self._send(415, {"error": "Передайте содержимое файла."})
                     return
@@ -95,9 +101,15 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(content)
             if not isinstance(data, dict):
                 raise ValueError("Ожидался объект JSON.")
-            if self.server.mode == "work" and self._team_request(path, data, post=True):
+            if path == "/api/demo-cleanup":
+                if set(data) != {"revision"} or not isinstance(data["revision"], str) or not data["revision"]:
+                    raise ValueError("Для очистки подтвердите актуальный предпросмотр.")
+                result = demo_cleanup.apply(self.server.vault.root, data["revision"])
+                self._send(200, {**result, "workUrl": "/"})
                 return
-            if self.server.mode == "work" and self._planning_request(path, data, post=True):
+            if self.mode == "work" and self._team_request(path, data, post=True):
+                return
+            if self.mode == "work" and self._planning_request(path, data, post=True):
                 return
             if capture_text:
                 if data.keys() - {"text", "title"}:
@@ -105,56 +117,59 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(201, Capture(self.server.vault.root).save_text(data.get("text"), data.get("title")))
                 return
             if path == "/api/ask":
-                self._send(200, self.server.reader.ask(data))
+                self._send(200, self.reader.ask(data))
                 return
             if path == "/api/citation":
-                _, source = self.server.reader.open_citation(data)
+                _, source = self.reader.open_citation(data)
                 self._send(200, source)
                 return
-            if self.server.mode == "work" and path == "/api/records/create":
+            if self.mode == "work" and path == "/api/records/create":
                 self._send(201, self.server.vault.create_record(data))
                 return
-            if self.server.mode == "work" and path == "/api/records/edit":
+            if self.mode == "work" and path == "/api/records/edit":
                 self._send(200, self.server.vault.edit_record(data))
                 return
-            if self.server.mode == "work" and path == "/api/inbox/process":
+            if self.mode == "work" and path == "/api/inbox/process":
                 self._send(200, Inbox(self.server.vault.root).process(data))
                 return
-            if self.server.mode == "work" and path == "/api/inbox/resolve":
+            if self.mode == "work" and path == "/api/inbox/resolve":
                 self._send(200, Batch(self.server.vault.root).resolve(data.get("id"), data.get("clarification")))
                 return
-            if self.server.mode == "work" and path == "/api/inbox/rule":
+            if self.mode == "work" and path == "/api/inbox/rule":
                 self._send(200, Routing(self.server.vault.root).save_rule(data))
                 return
-            if self.server.mode == "work" and path == "/api/person/correct":
+            if self.mode == "work" and path == "/api/person/correct":
                 self._send(200, self.server.people.correct(data))
                 return
-            if self.server.mode == "demo" and path == "/api/directions":
-                self._send(200, self.server.vault.add_direction(data))
+            if self.mode == "demo" and path == "/api/directions":
+                self._send(200, guide.add_direction(data))
                 return
-        elif self.server.mode == "work" and path == "/api/workspace":
+        elif path == "/api/demo-cleanup":
+            self._send(200, demo_cleanup.preview(self.server.vault.root))
+            return
+        elif self.mode == "work" and path == "/api/workspace":
             self._send(200, self.server.vault.overview())
             return
-        elif self.server.mode == "work" and self._team_request(path, params, post=False):
+        elif self.mode == "work" and self._team_request(path, params, post=False):
             return
-        elif self.server.mode == "work" and self._intake_page(path, params):
+        elif self.mode == "work" and self._intake_page(path, params):
             return
-        elif self.server.mode == "work" and self._planning_request(path, params, post=False):
+        elif self.mode == "work" and self._planning_request(path, params, post=False):
             return
-        elif self.server.mode == "work" and path == "/api/record":
+        elif self.mode == "work" and path == "/api/record":
             record_id = parse_qs(url.query).get("id", [""])[0]
             if not record_id:
                 raise ValueError("Укажите ID карточки.")
             self._send(200, self.server.vault.get_record(record_id))
             return
-        elif self.server.mode == "demo" and path == "/api/guide":
-            self._send(200, self.server.vault.guide())
+        elif self.mode == "demo" and path == "/api/guide":
+            self._send(200, guide.guide())
             return
         elif path.startswith("/source/"):
             self._show_document(unquote(path[len("/source/"):]), parse_qs(url.query))
             return
         elif not path.startswith("/api/"):
-            entry = "workspace.html" if self.server.mode == "work" else "index.html"
+            entry = "workspace.html" if self.mode == "work" else "index.html"
             relative = Path(unquote(path.lstrip("/")) or entry)
             if relative.parts and all(not p.startswith(".") for p in relative.parts):
                 file = (WEB / relative).resolve()
@@ -212,16 +227,33 @@ class Handler(BaseHTTPRequestHandler):
                        "/api/plan/due/preview", "/api/plan/due/apply",
                        "/api/plan/schedule/preview", "/api/plan/schedule/apply",
                        "/api/plan/scenario/preview", "/api/plan/scenario/apply"}
-        if post and "planId" in data and path in row_actions:
+        context_keys = data.keys() & {"planId", "projectId"}
+        if post and context_keys and path in row_actions:
             from .planning import Planning
             root = self.server.vault.root
+            if len(context_keys) != 1:
+                raise ValueError("Укажите одно представление, из которого открыта работа.")
             with storage._vault_lock(root, write=not path.endswith("/preview")):
-                plan = Planning(root).view(data["planId"])
-                if plan["status"] == "closed":
-                    raise storage.ConflictError("План уже закрыт. Для изменения работы откройте текущую карточку.")
-                if not any(row["id"] == data.get("id") for row in plan["items"]):
-                    raise storage.ConflictError("Состав плана изменился. Откройте план заново.")
-                result = self._plan_data(path, {k: v for k, v in data.items() if k != "planId"}, post=True)
+                planning = Planning(root)
+                if "projectId" in context_keys:
+                    project_id = data["projectId"]
+                    if not isinstance(project_id, str) or not project_id:
+                        raise ValueError("Укажите проект.")
+                    try:
+                        project = storage.read_record(storage.find_record(root, project_id))
+                    except FileNotFoundError as error:
+                        raise storage.ConflictError("Карточка проекта больше недоступна. Обновите Гант.") from error
+                    if project["type"] != "project":
+                        raise storage.ConflictError("Карточка проекта изменилась. Обновите Гант.")
+                    if planning.task(data.get("id"))["project"] != project_id:
+                        raise storage.ConflictError("Работа больше не входит в этот проект. Обновите Гант.")
+                else:
+                    plan = planning.view(data["planId"])
+                    if plan["status"] == "closed":
+                        raise storage.ConflictError("План уже закрыт. Для изменения работы откройте текущую карточку.")
+                    if not any(row["id"] == data.get("id") for row in plan["items"]):
+                        raise storage.ConflictError("Состав плана изменился. Откройте план заново.")
+                result = self._plan_data(path, {k: v for k, v in data.items() if k not in context_keys}, post=True)
         else:
             result = self._plan_data(path, data, post=post)
         if result is None:
@@ -240,8 +272,96 @@ class Handler(BaseHTTPRequestHandler):
             result = {"root": str(root), "name": root.name, "binding": self.server.vault_binding}
         elif not post and path == "/api/plans":
             result = {"items": Planning(root).plans(), "name": root.name, "root": str(root)}
+        elif not post and path == "/api/plan/activity":
+            from .project_activity import ProjectActivity
+            result = ProjectActivity(root).catalog()
+        elif post and path == "/api/plan/project-membership":
+            from .project_membership import ProjectMembership
+            if data.keys() != {"id", "projectId", "present", "revision"} or type(data["present"]) is not bool:
+                raise ValueError("Укажите план, проект, действие и прочитанную версию плана.")
+            result = ProjectMembership(root).set(identifier, data["projectId"], present=data["present"],
+                                                 revision=data["revision"], actor="manual")
+        elif post and path == "/api/plan/project-task":
+            from .project_membership import ProjectMembership
+            if data.keys() != {"id", "projectId", "taskId", "revision"}:
+                raise ValueError("Укажите план, проект, выбранную работу и прочитанную версию плана.")
+            result = ProjectMembership(root).add_task(identifier, data["projectId"], data["taskId"],
+                                                       revision=data["revision"], actor="manual")
+        elif not post and path in ("/api/plan/feedback", "/api/plan/project-history"):
+            limit, offset = int(data.get("limit", brief.DEFAULT_LIMIT)), int(data.get("offset", 0))
+            if not 1 <= limit <= 20 or offset < 0:
+                raise ValueError("Укажите от 1 до 20 записей и неотрицательное смещение.")
+            if path.endswith("/feedback"):
+                from .gantt_feedback import GanttFeedback
+                result = brief.page(GanttFeedback(root).pending(data.get("planId")), limit, offset)
+            else:
+                from .project_feedback import ProjectFeedback
+                if data.get("pending", "0") not in ("0", "1"):
+                    raise ValueError("Для несверенной истории укажите pending=1.")
+                result = ProjectFeedback(root).history(identifier, pending=data.get("pending") == "1",
+                                                       limit=limit, offset=offset)
+        elif post and path == "/api/plan/reviewed":
+            from .gantt_feedback import GanttFeedback
+            if data.keys() != {"id", "token"}:
+                raise ValueError("Укажите ID и отпечаток прочитанных ручных правок.")
+            result = GanttFeedback(root).acknowledge(identifier, data["token"])
+        elif not post and path == "/api/plan/project-gantt":
+            from .project_gantt import ProjectGantt
+            result = {"name": root.name, "root": str(root), **ProjectGantt(root).view(identifier)}
+        elif post and path == "/api/plan/project-work":
+            if (not {"title", "kind", "projectId", "requestId"} <= data.keys()
+                    or data.keys() - {"title", "kind", "projectId", "requestId", "due"}
+                    or not isinstance(data["projectId"], str) or not data["projectId"] or not data["requestId"]):
+                raise ValueError("Укажите проект, тип работы, название и ключ запроса.")
+            result = Planning(root).create_task(data["title"], kind=data["kind"], project=data["projectId"],
+                                                due=data.get("due"), request_id=data["requestId"])
         elif not post and path in ("/api/plan/okrs", "/api/plan/okr"):
             return self._okr_page(root, identifier, catalog=path.endswith("/okrs"))
+        elif not post and path == "/api/plan/okr-board":
+            from .okr import KeyResults
+            result = {"name": root.name, "root": str(root), **KeyResults(root).board(identifier)}
+        elif not post and path == "/api/plan/okr-periods":
+            from .okr_web import periods
+            return periods(root)
+        elif not post and path in ("/api/plan/okr-sources", "/api/plan/okr-source-lines"):
+            from .okr_web import source_page
+            result = source_page(root, path.removeprefix("/api/plan/okr-"), data)
+        elif not post and path == "/api/plan/okr/readiness":
+            from .okr_progress import Progress
+            limit, offset = int(data.get("limit", 10)), int(data.get("offset", 0))
+            if not 1 <= limit <= 20 or offset < 0:
+                raise ValueError("Проверьте размер страницы и смещение.")
+            result = Progress(root).readiness(identifier, limit=limit, offset=offset)
+        elif post and path in {"/api/plan/okr/" + action for action in
+                              ("criterion", "criterion-target", "measure", "observe", "weight", "readiness")}:
+            from .okr_web import write
+            return write(root, path.rsplit("/", 1)[1], data)
+        elif post and path == "/api/plan/parent":
+            from .plan_tree import set_parent
+            if data.keys() != {"id", "taskId", "parentId", "revision"}:
+                raise ValueError("Укажите план, работу, родителя и версию плана.")
+            result = set_parent(Planning(root), identifier, data["taskId"], data["parentId"], data["revision"])
+        elif not post and path == "/api/plan/okr-options":
+            from .okr import KeyResults
+            planning = Planning(root)
+            with storage._vault_lock(root, write=False):
+                records = {r["id"]: r for _, r in storage.iter_records(root) if r["type"] in ("direction", "project")}
+                tasks = [{key: task[key] for key in ("id", "title", "direction", "project")} for task in planning.tasks()]
+                for task in tasks:
+                    for parent in ("direction", "project"):
+                        task[parent + "Title"] = records.get(task[parent], {}).get("title")
+                plans = [{k: p[k] for k in ("id", "title", "status")} for p in planning.plans()]
+                active = {p["id"] for p in plans if p["status"] == "active"}
+                result = {"directions": [{"id": r["id"], "title": r["title"]} for r in records.values()
+                                         if r["type"] == "direction"], "tasks": tasks,
+                          "projects": [{k: r.get(k) for k in ("id", "title", "direction")} for r in records.values()
+                                       if r["type"] == "project"],
+                          "plans": plans, "objectives": [{k: o[k] for k in ("id", "title", "direction", "planId")}
+                                                         for o in KeyResults(root).objectives() if o["planId"] in active]}
+        elif post and path in ("/api/plan/create", "/api/plan/objective/create",
+                               "/api/plan/okr/create", "/api/plan/okr/link", "/api/plan/okr/unlink",
+                               "/api/plan/okr/context", "/api/plan/okr/assign"):
+            return self._write_plan_okr(root, path, data)
         elif not post and path == "/api/plan":
             result = Gantt(root).view(identifier)
             if result["status"] == "closed":
@@ -338,8 +458,46 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return result
 
+    def _write_plan_okr(self, root, path, data):
+        from .okr import KeyResults
+        from .planning import Planning
+
+        if path in ("/api/plan/okr/link", "/api/plan/okr/unlink"):
+            if data.keys() != {"id", "taskId", "revision"}:
+                raise ValueError("Для связи укажите результат, работу и версию карточки результата.")
+            service = KeyResults(root)
+            change = service.unlink if path.endswith("/unlink") else service.link
+            return change(data["id"], data["taskId"], data["revision"])
+        if path == "/api/plan/okr/context":
+            if data.keys() != {"id", "projectId", "present", "revision"} or type(data["present"]) is not bool:
+                raise ValueError("Выберите проект, действие и версию ключевого результата.")
+            return KeyResults(root).context_project(data["id"], data["projectId"], present=data["present"],
+                                                    revision=data["revision"])
+        if path == "/api/plan/okr/assign":
+            if data.keys() != {"id", "objectiveId", "revision"}:
+                raise ValueError("Выберите цель и укажите версию карточки результата.")
+            return KeyResults(root).assign_objective(data["id"], data["objectiveId"], data["revision"])
+        required = {"title", "requestId"}
+        optional = set()
+        if path == "/api/plan/objective/create":
+            required.update(("planId", "direction"))
+        elif path == "/api/plan/okr/create":
+            required.add("objectiveId")
+            optional.update(("unit", "target", "taskIds"))
+        if not required <= data.keys() or data.keys() - required - optional or not data["requestId"]:
+            raise ValueError("Проверьте поля формы и ключ запроса на создание.")
+        if path == "/api/plan/create":
+            return Planning(root).create_plan(data["title"], request_id=data["requestId"])
+        if path == "/api/plan/objective/create":
+            return KeyResults(root).create_objective(data["title"], plan_id=data["planId"],
+                                                     direction=data["direction"], request_id=data["requestId"])
+        return KeyResults(root).create(data["title"], objective_id=data["objectiveId"], unit=data.get("unit"),
+                                       target=data.get("target"), task_ids=data.get("taskIds", []),
+                                       request_id=data["requestId"])
+
     def _okr_page(self, root, identifier, *, catalog):
         from .okr import KeyResults
+        from .okr_progress import enrich_card
         from .planning import Planning
 
         service = KeyResults(root)
@@ -359,6 +517,7 @@ class Handler(BaseHTTPRequestHandler):
                 return {"name": root.name, "items": rows}
 
             card = rows[0]
+            enrich_card(root, card)
             linked = {task["id"]: task for task in card["tasks"]}
             for task in linked.values():
                 task["plans"] = []
@@ -431,11 +590,11 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _show_document(self, record_id, params):
-        back, label = (("/#overview", "Обзор хранилища") if self.server.mode == "work"
+        back, label = (("/#overview", "Обзор хранилища") if self.mode == "work"
                        else ("/#ask", "Вопросы по направлениям"))
         try:
             number = params.get("line", [""])[0]
-            record, source = self.server.reader.open_citation({
+            record, source = self.reader.open_citation({
                 "id": record_id, "line": int(number) if number.isdecimal() else None,
                 "ref": params.get("ref", [None])[0],
             })
@@ -483,22 +642,26 @@ class Handler(BaseHTTPRequestHandler):
 def server(root, port=8765, *, mode="demo"):
     if not 0 <= port <= 65535:
         raise ValueError("Порт должен быть от 0 до 65535.")
-    if mode == "work":
-        from .people import People
-        from .query import WorkspaceQuery
-        from .workspace import Workspace
-        vault = Workspace(root)
-        reader = WorkspaceQuery(root)
-    elif mode == "demo":
+    from .people import People
+    from .query import WorkspaceQuery
+    from .workspace import Workspace
+    guide = None
+    if mode == "demo":
         from .demo import DemoVault
-        vault = reader = DemoVault(root)
-    else:
+        root = Path(root).expanduser()
+        if root.is_symlink():
+            raise ValueError("Для деморежима выберите обычную папку.")
+        if not demo_cleanup.is_cleaned(root):
+            guide = DemoVault(root)
+    elif mode != "work":
         raise ValueError("Неизвестный режим оболочки.")
+    vault = Workspace(root)
+    reader = WorkspaceQuery(root)
+    people = People(root)
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    httpd.vault, httpd.reader, httpd.mode = vault, reader, mode
-    if mode == "work":
-        httpd.people = People(root)
-        httpd.vault_binding = hashlib.sha256(str(vault.root).encode()).hexdigest()
+    httpd.vault, httpd.reader, httpd.guide = vault, reader, guide
+    httpd.people = people
+    httpd.vault_binding = hashlib.sha256(str(vault.root).encode()).hexdigest()
     return httpd
 
 

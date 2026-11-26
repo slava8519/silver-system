@@ -39,6 +39,12 @@ export function cyclePreview(ui, planId, root, cancel, showClosed) {
       if (!panel.isConnected) return;
       if (proposal.status === "closed") { showClosed(); return; }
       const caption = node("p", "gantt-context", "В снимок войдут состав плана и даты на момент закрытия.");
+      if (proposal.okrCounts) {
+        const {objectives, results} = proposal.okrCounts;
+        caption.append(" Вместе с работами сохранятся " + counted(objectives, ["цель", "цели", "целей"]) +
+          " и " + counted(results, ["ключевой результат", "ключевых результата", "ключевых результатов"]) +
+          " с последними замерами.");
+      }
       const table = node("table", "cycle-preview-table");
       const head = table.createTHead().insertRow();
       for (const label of ["Работа", ...Object.values(dateLabels)]) {
@@ -65,9 +71,13 @@ export function cyclePreview(ui, planId, root, cancel, showClosed) {
       tableBox.setAttribute("aria-label", "Работы перед закрытием");
       tableBox.append(table);
       feedback.replaceChildren();
-      content.append(caption, node("p", "cycle-count", counted(proposal.items.length, ["строка", "строки", "строк"])));
+      const counts = [counted(proposal.items.length, ["работа", "работы", "работ"])];
+      if (proposal.includedProjectCount) {
+        counts.push("Явно включено проектов — " + proposal.includedProjectCount);
+      }
+      content.append(caption, node("p", "cycle-count", counts.join(" · ")));
       if (proposal.items.length) content.append(tableBox);
-      else content.append(node("p", "gantt-empty", "Этот цикл будет сохранён с пустым составом."));
+      else content.append(node("p", "gantt-empty", "В этом плане пока нет выбранных работ."));
       revision = proposal.revision;
       confirm.disabled = false;
     } catch (error) { retry(error); }

@@ -1,38 +1,46 @@
 import {dateText} from "./gantt-axis.js";
 
-export function milestoneForm(ui, plan, finish) {
+export function newWorkForm(ui, plan, finish) {
   const {node, option, labelled, button, notice, api} = ui;
+  const project = plan.scope === "project";
   const form = node("form", "gantt-form gantt-new-milestone");
   const requestId = crypto.randomUUID();
-  const title = node("input"); title.name = "milestoneTitle"; title.required = true;
+  const title = node("input"); title.name = project ? "taskTitle" : "milestoneTitle"; title.required = true;
   const due = node("input"); due.type = "date"; due.name = "due";
-  const scope = node("select");
-  scope.append(option("", "Без привязки"));
-  const scopes = new Map();
-  for (const row of plan.items) {
-    for (const [field, label] of [["direction", "Направление"], ["project", "Проект"]]) {
-      if (row[field]) scopes.set(field + "/" + row[field], label + " · " + row[field + "Title"]);
+  const kind = node("select"), scope = node("select");
+  form.append(node("h2", "", project ? "Новая работа" : "Новая веха"),
+    labelled(project ? "Название работы" : "Название вехи", title));
+  if (project) {
+    kind.append(option("task", "Задача"), option("milestone", "Веха"));
+    form.append(labelled("Тип работы", kind));
+  } else {
+    const scopes = new Map();
+    for (const row of plan.items) {
+      for (const [field, label] of [["direction", "Направление"], ["project", "Проект"]]) {
+        if (row[field]) scopes.set(field + "/" + row[field], label + " · " + row[field + "Title"]);
+      }
     }
+    scope.append(option("", "Без привязки"));
+    for (const [key, name] of scopes) scope.append(option(key, name));
+    if (scopes.size) form.append(labelled("Связать с направлением или проектом из плана", scope));
   }
-  for (const [key, name] of scopes) scope.append(option(key, name));
-  form.append(node("h2", "", "Новая веха"), labelled("Название вехи", title), labelled("Согласованный срок (необязательно)", due));
-  if (scopes.size) form.append(labelled("Связать с направлением или проектом из плана", scope));
+  form.append(labelled("Согласованный срок (необязательно)", due));
   const tools = node("div", "work-tools");
-  const submit = node("button", "button button-primary", "Добавить в план"); submit.type = "submit";
+  const submit = node("button", "button button-primary", project ? "Добавить в проект" : "Добавить в план"); submit.type = "submit";
   tools.append(submit, button("Отмена", "button button-secondary", () => finish()));
   const output = node("div");
   form.append(tools, output);
   form.addEventListener("submit", async event => {
     event.preventDefault();
     if (!title.value.trim() || submit.disabled) return;
-    const payload = {title: title.value.trim(), planId: plan.id, requestId};
+    const payload = {title: title.value.trim(), requestId, ...(project ? {projectId: plan.id, kind: kind.value} : {planId: plan.id})};
     if (due.value) payload.due = due.value;
     if (scope.value) {
       const [field, id] = scope.value.split("/");
       payload[field] = id;
     }
     for (const control of form.elements) control.disabled = true;
-    try { await finish(await api("plan/milestone", payload)); }
+    try { await finish(await api(project ? "plan/project-work" : "plan/milestone", payload)); }
     catch (error) { output.replaceChildren(notice(error.message)); }
     finally { for (const control of form.elements) control.disabled = false; }
   });

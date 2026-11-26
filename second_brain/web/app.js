@@ -1,4 +1,4 @@
-"use strict";
+import { mountCleanup } from "./demo-cleanup.js";
 
 (() => {
   const home = document.getElementById("home");
@@ -46,7 +46,11 @@
     } catch {
       throw new Error("Хранилище вернуло неожиданный ответ. Попробуйте ещё раз.");
     }
-    if (!response.ok) throw new Error(data.error || "Не удалось выполнить запрос.");
+    if (!response.ok) {
+      const error = new Error(data.error || "Не удалось выполнить запрос.");
+      error.status = response.status;
+      throw error;
+    }
     return data;
   }
 
@@ -609,6 +613,7 @@
     document.getElementById("content").focus();
   });
   document.getElementById("home-question").append(freeQuestionForm());
+  mountCleanup(document.getElementById("guide-cleanup"), api, el, {guide:true});
   window.addEventListener("hashchange", renderRoute);
   loadGuide();
 })();

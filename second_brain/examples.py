@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 from urllib.parse import quote
 
-from . import storage
+from . import demo_cleanup, storage
 
 
 def _link(root, path, title):
@@ -37,6 +37,7 @@ def create_examples(root):
             home.append("")
         home.extend(["[Как добавить своё направление](Start-Here.md)", ""])
         (staged / "Home.md").write_text("\n".join(home), encoding="utf-8")
+        demo_cleanup.record_seed(staged)
         if os.path.lexists(root):
             raise FileExistsError(f"Путь для примеров уже занят: {root}")
         staged.rename(root)

@@ -7,7 +7,7 @@ import tempfile
 
 # Allow 'python3 examples/working_vault.py ...' from a source checkout.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from second_brain import storage
+from second_brain import demo_cleanup, storage
 from second_brain.inbox import Inbox
 from second_brain.workspace import Workspace
 
@@ -83,6 +83,7 @@ def generate(destination):
             "# Учебное хранилище\n\nВсе карточки, решения, статусы и сроки в этой папке вымышлены.\n\n"
             "Для проверки общего вопроса спросите: «Что решили по Меридиану и Палитре?»\n",
             encoding="utf-8")
+        demo_cleanup.record_seed(root)
         if destination.exists() or destination.is_symlink():
             raise FileExistsError(destination)
         root.rename(destination)

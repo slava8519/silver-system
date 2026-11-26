@@ -132,8 +132,8 @@ def add_commands(commands):
     pending = commands.add_parser("gantt-feedback", help="найти ещё не сверенные ручные правки и даты")
     pending.add_argument("--plan", metavar="ID")
     _paging(pending)
-    reviewed = commands.add_parser("gantt-reviewed", help="отметить прочитанную версию ручных правок задачи")
-    reviewed.add_argument("task_id")
+    reviewed = commands.add_parser("gantt-reviewed", help="отметить прочитанную версию ручных правок работы или плана")
+    reviewed.add_argument("record_id", help="ID задачи или плана из gantt-feedback")
     reviewed.add_argument("token", help="отпечаток ручных правок из gantt-feedback")
     for parser in (task, plan, tasks, plans, show_task, show_plan, add, move, history, row, edit, pending, reviewed,
                    dependency, scenario, close):
@@ -182,7 +182,7 @@ def run(root, args):
         from .gantt_feedback import GanttFeedback
         feedback = GanttFeedback(root)
         if command == "gantt-reviewed":
-            return feedback.acknowledge(args.task_id, args.token)
+            return feedback.acknowledge(args.record_id, args.token)
         return brief.page(feedback.pending(args.plan), args.limit, args.offset)
     if command in {"gantt-row", "gantt-edit"}:
         from .gantt import Gantt

@@ -44,12 +44,18 @@ class OkrExamples(unittest.TestCase):
                     self.assertEqual(line, source["quote"])
                     task, = card["tasks"]
                     memberships = plans.plans_for_task(task["id"])
-                    self.assertEqual({p["title"] for p in memberships}, {"План недели", plan_name})
+                    self.assertEqual({p["title"] for p in memberships}, {"План недели", plan_name, "OKR на IV квартал"})
                     for plan in memberships:
                         row, = [r for r in plans.view(plan["id"])["items"] if r["id"] == task["id"]]
                         self.assertEqual(row["path"], task["path"])
                     link = storage.markdown_link(card["title"], root / card["path"], root)
                     self.assertIn(link, (root / "Home.md").read_text())
+            quarter, = [p for p in plans.plans() if p["title"] == "OKR на IV квартал"]
+            board = results.board(quarter["id"])
+            self.assertEqual(len(board["objectives"]), 3)
+            self.assertEqual(len({r["project"] for r in board["items"] if r["project"]}), 2)
+            self.assertEqual(len(board["items"]), 4)
+            self.assertEqual(len(board["gaps"]["unlinkedTaskIds"]), 1)
 
     def test_generator_requires_a_new_destination(self):
         with tempfile.TemporaryDirectory() as temporary:

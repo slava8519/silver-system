@@ -1,113 +1,115 @@
 import {dateText} from "./gantt-axis.js";
-import {cardLinks} from "./gantt-detail.js";
+import {objectiveEditor, resultEditor, taskScope} from "./gantt-okr-forms.js";
+import {boardURL, resultURL, planName, threshold, reading, readiness, checkSummary} from "./gantt-okr-values.js";
+import {cardPage} from "./gantt-okr-detail.js";
+import {activityCatalog} from "./project-activity.js";
 
 const catalogTitle = "Цели и ключевые результаты";
-const quantity = (value, unit) => String(value).replace(".", ",") + " " + unit;
-
-export function okrLink(ui) {
-  return ui.link(catalogTitle, "#okr", "text-link");
+export function okrLink(ui, planId) {
+  return ui.link(planId ? catalogTitle : "Проектная деятельность", planId ? boardURL(planId) : "#activity", "text-link");
 }
 
-export async function openOKR(ui, view, id, planURL) {
-  const {api, node, link, pageHead, embedded} = ui;
-  if (!id) {
-    const catalog = await api("plan/okrs");
-    if (!view.isConnected) return;
-    view.append(link("← Все планы", "#plans", "back-link"), pageHead(catalog.name, catalogTitle));
-    if (!catalog.items.length) {
-      view.append(node("p", "gantt-empty", "Ключевых результатов пока нет. Чтобы добавить первый, укажите в Codex направление, цель и единицу измерения."));
-      return;
-    }
-    const groups = new Map();
-    for (const item of catalog.items) {
-      const groupKey = JSON.stringify([item.direction, item.objective]);
-      if (!groups.has(groupKey)) {
-        const group = node("section", "work-panel okr-panel");
-        group.append(node("p", "gantt-context", item.directionTitle || "Направление недоступно"),
-          node("h2", "work-heading", item.objective));
-        view.append(group);
-        groups.set(groupKey, group);
-      }
-      const row = link("", "#okr/" + encodeURIComponent(item.id), "record-row");
-      let summary = item.measurement
-        ? quantity(item.measurement.value, item.unit) + " · " + dateText(item.measurement.date)
-        : "Нет измерения";
-      if (item.measurement?.sourceUnavailable) summary += " · источник недоступен";
-      row.append(node("strong", "record-main row-title", item.title), node("span", "record-side", summary));
-      groups.get(groupKey).append(row);
-    }
-    return;
-  }
-
-  const card = await api("plan/okr?id=" + encodeURIComponent(id));
+async function boardPage(ui, view, planId, planURL) {
+  const {api, node, link, labelled, option, pageHead, counted} = ui;
+  const board = await api("plan/okr-board?id=" + encodeURIComponent(planId));
   if (!view.isConnected) return;
-  const openNote = cardLinks(ui, card.root);
-  view.append(link("← " + catalogTitle, "#okr", "back-link"),
-    pageHead(card.directionTitle || card.name, card.title, openNote("Открыть в Obsidian ↗", card.path)));
-
-  const panel = node("section", "work-panel okr-panel");
-  panel.append(node("h2", "work-heading", "Цель"), node("p", "", card.objective));
-  const facts = node("dl", "record-facts");
-  function fact(label, value) {
-    const field = node("div");
-    field.append(node("dt", "", label), node("dd", "", value));
-    facts.append(field);
-  }
-  fact("Последний замер", card.measurement ? quantity(card.measurement.value, card.unit) : "Нет измерения");
-  if (card.measurement) fact("Дата замера", dateText(card.measurement.date));
-  else fact("Единица измерения", card.unit);
-  if (card.target != null) fact("Ориентир", quantity(card.target, card.unit));
-  panel.append(facts);
-
-  function evidence(source) {
-    const block = node("div", "okr-source");
-    block.append(node("blockquote", "", source.quote));
-    const label = source.path + " · строка " + source.line;
-    if (source.unavailable) {
-      block.append(node("p", "gantt-context", "Сохранённая цитата. Исходная строка изменилась или недоступна."),
-        node("span", "record-path", label));
-      return block;
-    }
-    if (embedded) block.append(openNote(label, source.path, source));
-    else {
-      const url = new URL(source.href, location.href);
-      if (url.origin === location.origin && url.pathname.startsWith("/source/")) {
-        const a = link(label, url.href, "text-link");
-        a.target = "_blank";
-        a.rel = "noopener";
-        block.append(a);
+  const options = board.historical ? {plans: (await api("plans")).items} : await api("plan/okr-options");
+  if (!view.isConnected) return;
+  function draw(data, message = "", focusId) {
+    if (!view.isConnected) return;
+    const {plan, objectives} = data;
+    const historical = data.historical;
+    const chooser = node("select");
+    for (const entry of options.plans) chooser.append(option(entry.id, planName(entry)));
+    chooser.value = plan.id;
+    chooser.addEventListener("change", () => ui.go(boardURL(chooser.value)));
+    const head = pageHead(catalogTitle, plan.title, labelled("План или период", chooser),
+      link("Общий Гант плана", planURL(plan.id), "button button-secondary"));
+    head.classList.add("okr-period-head");
+    const status = node("p", "gantt-status", message); status.setAttribute("role", "status");
+    const content = node("section", "okr-directory");
+    view.replaceChildren(link("← Проектная деятельность", "#activity", "back-link"), head, status, content);
+    const all = objectives.flatMap(row => row.results);
+    const initiatives = new Set(all.flatMap(row => row.taskIds));
+    const bar = node("div", "okr-directory-bar");
+    const totals = node("p", "okr-totals");
+    for (const value of [counted(objectives.length, ["цель","цели","целей"]),
+      counted(all.length, ["ключевой результат","ключевых результата","ключевых результатов"]),
+      counted(initiatives.size, ["инициатива","инициативы","инициатив"])]) totals.append(node("span", "", value));
+    bar.append(totals);
+    if (data.progress?.value != null) bar.append(node("span","okr-period-progress",
+      "Готовность инициатив · " + readiness(data.progress) + (data.progress.hasEstimates ? " с оценками" : "")));
+    content.append(bar);
+    if (historical) content.append(node("p", "cycle-stamp", "Снимок на момент закрытия" + (plan.closedAt ? " · " + dateText(plan.closedAt.slice(0,10)) : "")));
+    async function created(saved, text) { draw(await api("plan/okr-board?id=" + encodeURIComponent(plan.id)), text, saved.id); }
+    const targetNodes = new Map();
+    if (objectives.length) {
+      const table = node("table", "okr-table");
+      const caption = node("caption", "okr-sr", "Цели периода, ключевые результаты, факты, условия и готовность инициатив");
+      const labels = ["Цель", "Ключевой результат", "Факт / проверки", "Порог", "Инициативы"];
+      const header = table.createTHead().insertRow();
+      for (const label of labels) { const cell = node("th","",label); cell.scope = "col"; header.append(cell); }
+      table.prepend(caption);
+      for (const objective of objectives) {
+        const body = table.createTBody();
+        const goal = node("th", "okr-goal"); goal.scope = "rowgroup"; goal.rowSpan = Math.max(1, objective.results.length);
+        const title = node("span", "okr-goal-name", objective.title); title.tabIndex = -1;
+        goal.append(title); targetNodes.set(objective.id, title);
+        if (objective.directionTitle) goal.append(node("small", "okr-sub", objective.directionTitle));
+        if (objective.progress?.value != null) goal.append(node("small", "okr-sub", "Готовность " + readiness(objective.progress)));
+        for (const [index, result] of (objective.results.length ? objective.results : [null]).entries()) {
+          const row = body.insertRow();
+          if (!index) row.append(goal);
+          if (!result) { const empty = node("td", "okr-empty-cell", "Ключевых результатов пока нет."); empty.colSpan=4; row.append(empty); continue; }
+          const name = node("th","okr-kr"); name.scope="row";
+          const a = link(result.title, resultURL(result.id, plan.id), "text-link");
+          name.append(a); targetNodes.set(result.id, a); row.append(name);
+          function cell(index, value) {
+            const td = node("td", "", value); td.dataset.label = labels[index]; row.append(td); return td;
+          }
+          const check = checkSummary(result);
+          const fact = reading(result);
+          const current = cell(2, fact === "—" && check ? check : fact);
+          if (fact !== "—" && check) current.append(node("small", "okr-sub", check));
+          cell(3, threshold(result));
+          const work = cell(4, counted(result.taskIds.length, ["работа","работы","работ"]));
+          if (result.progress?.value != null) work.append(node("small", "okr-sub", readiness(result.progress) + (result.progress.hasEstimates ? " с оценками" : "")));
+        }
       }
-    }
-    return block;
-  }
-  if (card.measurement) panel.append(evidence(card.measurement.source));
-  if (card.history.length > 1) {
-    const history = node("details", "record-source");
-    history.append(node("summary", "text-link", "Предыдущие замеры"));
-    for (const row of card.history.slice(0, -1).reverse()) {
-      history.append(node("p", "", dateText(row.date) + " · " + quantity(row.value, card.unit)), evidence(row.source));
-    }
-    panel.append(history);
-  }
-
-  const work = node("section", "work-panel okr-panel");
-  work.append(node("h2", "work-heading", "Связанные работы"));
-  for (const task of card.tasks) {
-    const row = node("div", "okr-task");
-    if (task.path) row.append(openNote(task.title + " ↗", task.path));
-    else row.append(node("span", "gantt-missing", "Карточка недоступна · " + task.id));
-    if (task.plans.length) {
-      const plans = node("div", "work-tools");
-      for (const plan of task.plans) {
-        const title = plan.title + (plan.status === "closed" ? " · закрыт" : "");
-        plans.append(task.path || plan.status === "closed"
-          ? link(title, planURL(plan.id, task.id), "text-link")
-          : node("span", "gantt-context", title));
+      content.append(table);
+    } else content.append(node("p", "gantt-empty", historical && data.hierarchyRecorded === false ?
+      "В снимке этого цикла цели и результаты не были зафиксированы." : "В этом плане пока нет целей."));
+    if (!historical) {
+      const manage = node("div", "okr-manage");
+      if (options.directions.length) manage.append(objectiveEditor(ui, plan.id, options.directions, saved => created(saved, "Цель создана.")));
+      else {
+        const empty = node("p","gantt-context","Для первой цели нужно направление. ");
+        empty.append(ui.embedded ? "Создайте его в рабочей админке или через Codex." : link("Создать направление", "#new/direction","text-link"));
+        manage.append(empty);
       }
-      row.append(node("span", "gantt-context", "В планах"), plans);
-    } else row.append(node("small", "gantt-context", "Работа пока не входит в планы."));
-    work.append(row);
+      if (objectives.length) manage.append(resultEditor(ui, objectives, options.tasks, saved => created(saved, "Ключевой результат создан.")));
+      content.append(manage);
+    }
+    if (data.gaps.unlinkedTaskIds.length && data.hierarchyRecorded !== false) {
+      const box = node("details", "okr-extra-work");
+      const rows = new Map(data.items.map(row => [row.id,row]));
+      box.append(node("summary", "text-link", "Работы периода без связи с КР · " + data.gaps.unlinkedTaskIds.length));
+      const list = node("ul", "okr-work-list");
+      for (const id of data.gaps.unlinkedTaskIds) {
+        const row = rows.get(id); const li = node("li");
+        if (row && !row.missing) li.append(link(row.title,planURL(plan.id,id),"text-link"), node("small","okr-sub", taskScope(row)));
+        else li.textContent = "Карточка задачи недоступна · " + id;
+        list.append(li);
+      }
+      box.append(list); content.append(box);
+    }
+    targetNodes.get(focusId)?.focus();
   }
-  if (!card.tasks.length) work.append(node("p", "muted", "Связанных работ пока нет."));
-  view.append(panel, work);
+  draw(board);
+}
+
+export async function openOKR(ui, view, id, planURL, planId = new URLSearchParams(location.hash.split("?")[1]).get("plan")) {
+  if (id) return cardPage(ui, view, id, planId, planURL);
+  if (planId) return boardPage(ui, view, planId, planURL);
+  return activityCatalog(ui, view);
 }

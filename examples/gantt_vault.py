@@ -7,7 +7,7 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from examples.planning_vault import generate as generate_plans
-from second_brain import storage
+from second_brain import demo_cleanup, storage
 from second_brain.gantt import Gantt
 from second_brain.planning import Planning
 
@@ -153,6 +153,7 @@ def generate(destination):
     with tempfile.TemporaryDirectory(dir=destination.parent) as temp:
         root = generate_plans(Path(temp) / "vault")
         _populate(root)
+        demo_cleanup.record_seed(root)
         if destination.exists() or destination.is_symlink():
             raise FileExistsError(f"Каталог учебного хранилища уже занят: {destination}")
         root.rename(destination)

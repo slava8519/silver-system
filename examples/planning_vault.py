@@ -7,7 +7,7 @@ import tempfile
 from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from second_brain import storage
+from second_brain import demo_cleanup, storage
 from second_brain.examples import create_examples
 from second_brain.planning import Planning
 
@@ -48,6 +48,7 @@ def generate(destination):
                        "Сроки в примерах вымышлены. В плане недели собраны задачи всех трёх направлений.\n\n")
             for plan in (week, launch, travel, trials):
                 home.write(f'- [{plan["title"]}]({quote(plan["path"])})\n')
+        demo_cleanup.record_seed(root)
         if destination.exists() or destination.is_symlink():
             raise FileExistsError(f"Каталог учебного хранилища уже занят: {destination}")
         root.rename(destination)

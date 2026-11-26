@@ -10,6 +10,7 @@ import threading
 import unittest
 
 from examples.gantt_vault import generate
+from second_brain import storage
 from second_brain.gantt import Gantt
 from second_brain.gantt_feedback import GanttFeedback
 from second_brain.planning import Planning
@@ -134,6 +135,100 @@ class GanttInterfaces(unittest.TestCase):
         task = next(t for t in self.planning.tasks() if t.get("start"))
         self.assertEqual(self.request("/api/plan/due/preview", {"id": task["id"], "due": "2026-11-01"})[0], 400)
         self.assertEqual(self.request("/api/plan/due/preview", {"id": task["id"], "due": None})[0], 200)
+
+    def test_work_created_in_project_is_live_without_a_period(self):
+        project_path = storage.create(self.root, "project", "Длинный проект", due="2027-12-31")
+        project = storage.read_record(project_path)["id"]
+        scope = "/api/plan/project-gantt?id=" + project
+        self.assertEqual(self.request(scope)[1]["items"], [])
+        self.assertIn(project, [p["id"] for p in self.request("/api/plan/activity")[1]["projects"]])
+        plans_before = self.planning.plans()
+        rows = []
+        for kind in ("task", "milestone"):
+            payload = {"title": "Работа " + kind, "kind": kind, "projectId": project, "requestId": "year-" + kind}
+            code, row, _ = self.request("/api/plan/project-work", payload)
+            self.assertEqual(code, 200, row)
+            self.assertEqual(self.request("/api/plan/project-work", payload)[1]["id"], row["id"])
+            rows.append(row["id"])
+        self.assertEqual({r["id"] for r in self.request(scope)[1]["items"]}, set(rows))
+        self.assertEqual(self.planning.plans(), plans_before)
+        update = {"projectId": project, "id": rows[0], "due": "2027-11-01"}
+        preview = self.request("/api/plan/due/preview", update)[1]
+        self.assertEqual(preview["plans"], [])
+        self.assertEqual(self.request("/api/plan/due/apply", {**update, "revision": preview["revision"]})[0], 200)
+        self.assertEqual(self.planning.task(rows[0])["due"], update["due"])
+        outside = self.planning.create_task("Другая работа")
+        self.assertEqual(self.request("/api/plan/due/preview", {**update, "id": outside["id"]})[0], 409)
+        project_path.unlink()
+        self.assertEqual(self.request("/api/plan/due/preview", update)[0], 409)
+        self.assertEqual(self.request(scope)[0], 404)
+
+    def test_project_membership_feedback_survives_closure_and_stale_acknowledgement(self):
+        plan = self.planning.create_plan("Годовой портфель")
+        pid = plan["id"]
+        project = storage.read_record(storage.create(self.root, "project", "Переезд"))["id"]
+        chosen = self.planning.create_task("Выбрать одно помещение", project=project)
+        self.planning.create_task("Принять ремонт", project=project)
+        endpoint = "/api/plan/project-membership"
+        write = {"id":pid, "projectId":project, "present":True, "revision":plan["revision"]}
+        self.assertEqual(self.request(endpoint, {**write, "actor":"ai"})[0], 400)
+        self.assertEqual(self.request(endpoint, {**write, "present":"true"})[0], 400)
+        status, included, _ = self.request(endpoint, write)
+        self.assertEqual(status, 200, included)
+        self.assertEqual(self.planning.view(pid)["items"], [])
+        link = self.cli("activity-list", "--view", "projects", "--plan", pid)["items"][0]["planLink"]
+        self.assertEqual((link["explicitlyIncluded"], link["taskCount"]), (True, 0))
+        task = {"id":pid, "projectId":project, "taskId":chosen["id"], "revision":included["revision"]}
+        status, added, _ = self.request("/api/plan/project-task", task)
+        self.assertEqual(status, 200, added)
+        self.assertEqual(self.request("/api/plan/project-task", {**task, "revision":added["revision"]})[1]["changed"], False)
+        self.assertEqual([r["id"] for r in self.planning.view(pid)["items"]], [chosen["id"]])
+        self.assertEqual(self.request(endpoint, {**write, "present":False})[0], 409)
+        pending = self.cli("plan-project", pid, "--history", "--pending", "--limit", "1")
+        self.assertTrue(pending["truncated"])
+        event, = pending["items"]
+        self.assertEqual((event["action"], event["actor"], event["taskId"]), ("add-task", "manual", chosen["id"]))
+        self.assertIn("Выбрать одно помещение", (self.root / event["path"]).read_text().splitlines()[event["line"]-1])
+        history = self.request("/api/plan/project-history?id=" + pid + "&pending=1&offset=1")[1]
+        self.assertEqual(history["items"][0]["action"], "include")
+        self.assertEqual(history["token"], pending["token"])
+        self.assertTrue(self.request(endpoint, {**write, "revision":added["revision"], "present":False})[1]["changed"])
+        self.assertEqual(self.request("/api/plan/reviewed", {"id":pid, "token":pending["token"]})[0], 409)
+        queue = self.request("/api/plan/feedback?planId=" + pid)[1]["items"]
+        plan_row = next(row for row in queue if row["kind"] == "plan-projects")
+        self.assertEqual(plan_row["manualEntries"], 3)
+        self.assertNotEqual(plan_row["token"], pending["token"])
+        ai = self.cli("plan-project", pid, "--include", project, "--revision", self.planning.view(pid)["revision"])
+        self.assertTrue(ai["changed"])
+        self.assertEqual(self.cli("plan-project", pid, "--history")["items"][0]["actor"], "ai")
+        close = self.cli("plan-close", pid)
+        self.cli("plan-close", pid, "--apply", close["revision"])
+        row, = self.cli("gantt-feedback", "--plan", pid)["items"]
+        self.assertEqual((row["token"], row["manualEntries"]), (plan_row["token"], 3))
+        file = self.root / plan["path"]
+        snapshot = file.read_bytes()
+        self.assertTrue(self.cli("gantt-reviewed", pid, row["token"])["changed"])
+        self.assertFalse(self.cli("gantt-reviewed", pid, row["token"])["changed"])
+        self.assertEqual(self.cli("gantt-feedback", "--plan", pid)["items"], [])
+        self.assertEqual(file.read_bytes(), snapshot)
+
+    def test_only_new_web_decisions_reenter_the_plan_queue(self):
+        plan = self.planning.create_plan("План инвентаризации")
+        pid = plan["id"]
+        project = storage.read_record(storage.create(self.root, "project", "Учёт"))["id"]
+        task = self.planning.create_task("Сверить остаток", project=project)
+        write = {"id":pid, "projectId":project, "present":True, "revision":plan["revision"]}
+        rev = self.request("/api/plan/project-membership", write)[1]["revision"]
+        token = self.cli("plan-project", pid, "--history", "--pending")["token"]
+        self.assertTrue(self.request("/api/plan/reviewed", {"id":pid, "token":token})[1]["changed"])
+        ai = self.cli("plan-project", pid, "--task", task["id"], "--project", project, "--revision", rev)
+        self.assertEqual(self.cli("plan-project", pid, "--history", "--pending")["items"], [])
+        self.request("/api/plan/project-membership", {**write, "revision":ai["revision"], "present":False})
+        page = self.cli("plan-project", pid, "--history", "--pending")
+        self.assertEqual([(e["action"], e["actor"]) for e in page["items"]], [("exclude", "manual")])
+        self.assertNotEqual(token, page["token"])
+        self.assertEqual(self.request("/api/plan/reviewed", {"id":pid, "token":token})[0], 409)
+        self.assertEqual(self.planning.view(pid)["items"][0]["id"], task["id"])
 
     def test_older_events_page_matches_visible_card_and_revision(self):
         task = next(t for t in self.planning.tasks() if t["title"] == "Проверить восстановление базы")

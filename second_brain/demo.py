@@ -11,7 +11,7 @@ import shutil
 import tempfile
 import uuid
 
-from . import search, storage
+from . import demo_cleanup, search, storage
 from .query import WorkspaceQuery, source_fragment
 from .examples import create_examples
 from .webserver import server, serve
@@ -232,6 +232,8 @@ class DemoVault:
         digest = hashlib.sha256(json.dumps([title, note_title, body]).encode()).hexdigest()
         request = self.directory / hashlib.sha256(key.encode()).hexdigest()
         with storage._write_lock(self.root):
+            if demo_cleanup.is_cleaned(self.root):
+                raise storage.ConflictError("Деморежим завершён. Откройте рабочий обзор этой папки.")
             if request.exists():
                 if request.is_symlink() or _json(request / "request.json")["digest"] != digest:
                     raise ValueError("Эта попытка сохранения относится к другой записи.")

@@ -6,7 +6,8 @@ from pathlib import Path
 import sqlite3
 import sys
 
-from . import brief, intake_cli, okr_cli, planning_cli, search, storage, teams_cli, weekly_report
+from . import brief, intake_cli, okr_cli, okr_progress_cli, plan_tree, planning_cli, project_activity_cli
+from . import search, storage, teams_cli, weekly_report
 from .examples import create_examples
 
 
@@ -18,6 +19,8 @@ def command_line():
     commands.add_parser("examples", help="создать отдельное хранилище с тремя примерами")
     demo = commands.add_parser("demo", help="открыть локальный деморежим в браузере")
     demo.add_argument("--port", type=int, default=8765, help="локальный порт (по умолчанию 8765)")
+    cleanup = commands.add_parser("demo-cleanup", help="показать, какие учебные файлы можно убрать")
+    cleanup.add_argument("--apply", metavar="РЕВИЗИЯ", help="архивировать учебные файлы по подтверждённому предпросмотру")
     work = commands.add_parser("work", help="открыть рабочее хранилище в локальной оболочке")
     work.add_argument("--port", type=int, default=8766)
     ask = commands.add_parser("ask", help="найти ответ в нескольких записях и показать строки источников")
@@ -60,7 +63,7 @@ def command_line():
     membership = update.add_mutually_exclusive_group()
     membership.add_argument("--direction", metavar="ID")
     membership.add_argument("--detach", action="store_true", help="снять связь с направлением")
-    for option, field in (("status", "status"), ("due", "due"), ("next-step", "nextStep")):
+    for option, field in (("status", "status"), ("project-start", "projectStart"), ("due", "due"), ("next-step", "nextStep")):
         create.add_argument("--" + option, dest=field, default=argparse.SUPPRESS)
         group = update.add_mutually_exclusive_group()
         group.add_argument("--" + option, dest=field, default=argparse.SUPPRESS)
@@ -77,6 +80,9 @@ def command_line():
     intake_cli.add_commands(commands)
     planning_cli.add_commands(commands)
     okr_cli.add_commands(commands)
+    okr_progress_cli.add_commands(commands)
+    project_activity_cli.add_commands(commands)
+    plan_tree.add_commands(commands)
     teams_cli.add_commands(commands)
     weekly_report.add_command(commands)
     return parser
@@ -126,6 +132,13 @@ def run(args):
     if args.command == "examples":
         create_examples(root)
         return {"vault": str(root)}
+    if args.command == "demo-cleanup":
+        from . import demo_cleanup
+        if root.is_symlink() or not root.is_dir():
+            raise ValueError("Для очистки выберите существующую папку хранилища.")
+        if args.apply is None:
+            return demo_cleanup.preview(root)
+        return demo_cleanup.apply(root, args.apply)
     root = root.resolve()
     if args.command == "init":
         storage.initialize(root)
@@ -136,8 +149,14 @@ def run(args):
         return intake_cli.run(root, args)
     if getattr(args, "planning", False):
         return planning_cli.run(root, args)
+    if getattr(args, "plan_tree", False):
+        return plan_tree.run(root, args)
     if getattr(args, "okr", False):
         return okr_cli.run(root, args)
+    if getattr(args, "okr_progress", False):
+        return okr_progress_cli.run(root, args)
+    if getattr(args, "project_activity", False):
+        return project_activity_cli.run(root, args)
     if getattr(args, "teams", False):
         return teams_cli.run(root, args)
     if args.command == "weekly-review":
@@ -174,7 +193,7 @@ def run(args):
             return brief.overview(result, args.direction) if args.brief else result
         fields = {key: getattr(args, key) for key in ("title", "body", "direction")
                   if getattr(args, key) is not None}
-        fields.update({key: vars(args)[key] for key in ("status", "due", "nextStep") if key in vars(args)})
+        fields.update({key: vars(args)[key] for key in ("status", "projectStart", "due", "nextStep") if key in vars(args)})
         if args.alias is not None:
             fields["aliases"] = args.alias
         if args.command == "create":
@@ -193,7 +212,10 @@ def run(args):
             from .workspace import Workspace
             return brief.record(Workspace(root).get_record(args.id))
         path = storage.find_record(root, args.id)
-        return {**storage.read_record(path), "path": path.relative_to(root).as_posix()}
+        record = storage.read_record(path)
+        if record["type"] == "project":
+            record["projectStart"] = record.get("project_start")
+        return {**record, "path": path.relative_to(root).as_posix()}
     if args.command == "search":
         return search.search(root, args.query, args.limit)
     if args.command == "read":
@@ -216,7 +238,8 @@ def main():
         print(result)
     elif (getattr(args, "brief", False) or getattr(args, "folders", False) or getattr(args, "intake", False)
           or getattr(args, "planning", False) or getattr(args, "okr", False) or getattr(args, "teams", False)
-          or args.command == "weekly-review"
+          or getattr(args, "plan_tree", False) or getattr(args, "okr_progress", False)
+          or getattr(args, "project_activity", False) or args.command == "weekly-review"
           or (args.command == "list" and isinstance(result, dict))):
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
     else:

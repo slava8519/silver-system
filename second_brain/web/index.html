@@ -7,7 +7,7 @@
   <title>Второй мозг · Путеводитель</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/app.css">
-  <script defer src="/app.js"></script>
+  <script type="module" src="/app.js"></script>
 </head>
 <body>
   <a class="skip-link" href="#content">Перейти к содержимому</a>
@@ -35,7 +35,10 @@
           <p class="hero-label"><span class="mini-book" aria-hidden="true"></span>Деморежим</p>
           <h1 id="home-title">Второй мозг<br><em>на практике</em></h1>
           <p class="hero-intro">Найдите ответ в своих записях, откройте его источник и попробуйте добавить своё направление.</p>
-          <a class="button button-primary hero-start" href="#start">Начать знакомство <span aria-hidden="true">→</span></a>
+          <div class="hero-actions">
+            <a class="button button-primary hero-start" href="#start">Начать знакомство <span aria-hidden="true">→</span></a>
+            <div id="guide-cleanup" hidden></div>
+          </div>
         </div>
       </div>
       <div id="guide-error" hidden></div>

@@ -97,12 +97,14 @@ def overview(full, direction_id):
 def record(detail):
     result = {key: detail[key] for key in ("id", "type", "title", "direction", "path", "revision",
                                             "status", "due", "nextStep")}
-    clip_fields(result, ("title", "status", "due", "nextStep"))
+    if detail["type"] == "project":
+        result["projectStart"] = detail["projectStart"]
+    clip_fields(result, (key for key in ("title", "status", "projectStart", "due", "nextStep") if key in result))
     aliases = detail["aliases"]
     result["aliases"] = [name[:EXCERPT_LENGTH] for name in aliases[:DEFAULT_LIMIT]]
     if result["aliases"] != aliases:
         result.setdefault("truncatedFields", []).append("aliases")
     result["fieldSources"] = {key: detail["fieldSources"][key]
-                              for key in ("title", "aliases", "direction", "status", "due", "nextStep")
+                              for key in ("title", "aliases", "direction", "status", "projectStart", "due", "nextStep")
                               if key in detail["fieldSources"]}
     return result

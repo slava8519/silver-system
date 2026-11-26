@@ -1,5 +1,7 @@
+import { cleanupNotice, mountCleanup } from "./demo-cleanup.js";
 import { intakeViews } from "./intake.js";
 import { planningView } from "./gantt.js";
+import { activityHelp } from "./activity-help.js";
 
 (() => {
   const main = document.getElementById("content");
@@ -8,7 +10,7 @@ import { planningView } from "./gantt.js";
   document.body.classList.toggle("gantt-embed", embedded);
   const typeNames = { direction: "Направление", project: "Проект", note: "Заметка" };
   const sections = { overview: "Обзор хранилища", records: "Карточки", map: "Карта связей" };
-  const fields = { status: "Статус", due: "Срок", nextStep: "Следующий шаг" };
+  const fields = { status: "Статус", projectStart: "Согласованное начало", due: "Срок", nextStep: "Следующий шаг" };
   let data, byId, directions, pageVersion = 0;
 
   function node(tag, className = "", text) {
@@ -117,7 +119,7 @@ import { planningView } from "./gantt.js";
 
   function fieldValue(record, key) {
     const value = record[key];
-    if (!value) return node("span", "unknown-value", key === "nextStep" ? "Не задан" : "Не указан");
+    if (!value) return node("span", "unknown-value", key === "projectStart" ? "Не указано" : key === "nextStep" ? "Не задан" : "Не указан");
     if (!record.fieldSources?.[key]) return node("span", "", value);
     const a = link(value, recordURL(record.id, {field: key}), "field-source");
     a.title = record.fieldSources[key].path + " · строка " + record.fieldSources[key].line;
@@ -132,7 +134,7 @@ import { planningView } from "./gantt.js";
     }
     const table = node("table", "projects-table");
     const tr = table.createTHead().insertRow();
-    for (const name of ["Проект", "Статус", "Срок", "Следующий шаг"]) {
+    for (const name of ["Проект", ...Object.values(fields)]) {
       const th = node("th", "", name);
       th.scope = "col";
       tr.append(th);
@@ -154,8 +156,12 @@ import { planningView } from "./gantt.js";
     return panel;
   }
 
-  function overview() {
-    main.append(pageHead(data.name, sections.overview, button("Обновить", "button button-secondary", render), newLink()));
+  async function overview() {
+    const cleanup = node("div");
+    cleanup.hidden = true;
+    main.append(pageHead(data.name, sections.overview, button("Обновить", "button button-secondary", render), newLink(), cleanup));
+    const receipt = cleanupNotice(node);
+    if (receipt) main.append(receipt);
     const stats = node("div", "work-stats");
     for (const [type, caption] of [["direction","Направления"],["project","Проекты"],["note","Заметки"]]) {
       const metric = link("", "#records?type=" + type, "work-stat metric-" + type);
@@ -188,6 +194,7 @@ import { planningView } from "./gantt.js";
       link("Добавить материал", "#inbox", "button button-primary"));
     row.append(areas, capture);
     main.append(stats, row, projectTable(data.records.filter(r => r.type === "project")));
+    await mountCleanup(cleanup, api, node);
   }
 
   function recordRow(record) {
@@ -306,8 +313,9 @@ import { planningView } from "./gantt.js";
   async function recordPage(id, params, version) {
     const record = await api("record?" + new URLSearchParams({id}));
     if (version !== pageVersion) return;
-    main.append(pageHead(typeNames[record.type] + " · " + data.name, record.title,
-      link("Редактировать", "#edit/" + encodeURIComponent(id), "button button-primary")));
+    const actions = [link("Редактировать", "#edit/" + encodeURIComponent(id), "button button-secondary")];
+    if (record.type === "project") actions.unshift(link("Гант проекта", "#project-gantt/" + encodeURIComponent(id), "button button-primary"));
+    main.append(pageHead(typeNames[record.type] + " · " + data.name, record.title, ...actions));
     const panel = node("section","work-panel");
     if (record.type !== "direction") {
       const area = byId.get(record.direction);
@@ -356,14 +364,14 @@ import { planningView } from "./gantt.js";
   async function editPage(id, kind, params, version) {
     let record = id ? await api("record?" + new URLSearchParams({id})) : null;
     if (version !== pageVersion) return;
-    main.append(pageHead(data.name, record ? "Редактировать карточку" : "Новая карточка"));
+    main.append(pageHead(data.name, record ? "Редактировать карточку" : embedded ? "Создать проект" : "Новая карточка"));
     const form = node("form","work-panel work-editor");
     const controls = {};
     const type = node("select");
     for (const [k,v] of Object.entries(typeNames)) type.append(option(k,v));
     type.value = record?.type || kind || "note";
     if (!type.value) type.value = "note";
-    type.disabled = Boolean(id);
+    type.disabled = Boolean(id) || embedded;
     form.append(labelled("Тип карточки", type));
     function input(key, name, value, tag = "input") {
       const field = node(tag);
@@ -391,6 +399,7 @@ import { planningView } from "./gantt.js";
     const meta = node("div","editor-metadata");
     for (const [key,caption] of Object.entries(fields)) {
       const field = input(key,caption,record?.[key]);
+      if (key === "projectStart") field.type = "date";
       meta.append(field.parentElement);
     }
     form.append(meta);
@@ -404,7 +413,7 @@ import { planningView } from "./gantt.js";
     const submit = node("button","button button-primary","Сохранить");
     submit.type = "submit";
     const actions = node("div","work-tools");
-    actions.append(submit, link("Отмена",id ? recordURL(id) : "#records","button button-secondary"));
+    actions.append(submit, link("Отмена",id ? recordURL(id) : embedded ? "#activity" : "#records","button button-secondary"));
     form.append(feedback, actions);
     main.append(form);
     const initial = () => Object.fromEntries(Object.entries(controls).map(([k,f]) => [k,f.value]));
@@ -456,7 +465,7 @@ import { planningView } from "./gantt.js";
       submit.disabled = true;
       try {
         const saved = await api("records/" + (record ? "edit" : "create"), payload);
-        if (form.isConnected) go(recordURL(saved.id));
+        if (form.isConnected) go(embedded ? "#project-gantt/" + encodeURIComponent(saved.id) : recordURL(saved.id));
       } catch (error) {
         if (!form.isConnected) return;
         feedback.append(notice(error.message));
@@ -470,19 +479,22 @@ import { planningView } from "./gantt.js";
 
   async function render() {
     const version = ++pageVersion;
-    if (embedded && !/^#(?:plans$|plan\/|okr(?:$|\/))/.test(location.hash)) history.replaceState(null, "", "#plans");
+    if (embedded && !/^#(?:plans$|plan\/|project-gantt\/|activity(?:-help)?(?:$|\?)|okr(?:$|[/?])|new\/project(?:$|\?))/.test(location.hash)) history.replaceState(null, "", "#plans");
     if (location.hash.split("?")[0] === "#ask") history.replaceState(null, "", "#overview");
     const raw = location.hash.slice(1) || "overview";
     const split = raw.indexOf("?");
     const route = split < 0 ? raw : raw.slice(0,split);
     const params = new URLSearchParams(split < 0 ? "" : raw.slice(split + 1));
     const [page, recordId] = route.split("/");
-    const isPlan = page === "plans" || page === "plan" || page === "okr";
-    const nav = isPlan ? "plans" : page === "person" ? "people" : ["new","edit","record"].includes(page) ? "records" : page;
+    const isActivity = ["activity", "activity-help", "okr", "project-gantt"].includes(page);
+    const isPlan = page === "plans" || page === "plan" || isActivity;
+    const nav = isActivity ? "activity" : isPlan ? "plans" : page === "person" ? "people" : ["new","edit","record"].includes(page) ? "records" : page;
     main.classList.toggle("planning-main", isPlan);
     main.setAttribute("aria-busy","true");
     try {
-      if (isPlan) {
+      if (page === "activity-help") {
+        main.replaceChildren(activityHelp(params));
+      } else if (isPlan) {
         const view = node("div", "planning-view");
         main.replaceChildren(view);
         await planning(view, recordId && decodeURIComponent(recordId), params.get("task"), page);
@@ -503,7 +515,7 @@ import { planningView } from "./gantt.js";
         else if (page === "record" && recordId) await recordPage(decodeURIComponent(recordId),params,version);
         else if (page === "edit" && recordId) await editPage(decodeURIComponent(recordId),null,params,version);
         else if (page === "new") await editPage(null,recordId,params,version);
-        else overview();
+        else await overview();
       }
       if (version !== pageVersion) return;
       document.querySelectorAll("[data-page]").forEach(a => {

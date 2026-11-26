@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {dayOf, fitWindow, isoDay, plot, scheduleMarks, ticks} from "../second_brain/web/gantt-axis.js";
+import {calendarYear, dayOf, fitWindow, isoDay, plot, scheduleMarks, ticks} from "../second_brain/web/gantt-axis.js";
 
 const november = {start: dayOf("2026-11-01"), size: 30};
+test("annual scale follows calendar months when stepping into and out of a leap year", () => {
+  const leap = calendarYear(dayOf("2027-11-22"), 1);
+  assert.equal(isoDay(leap.start), "2028-01-01");
+  assert.equal(leap.size, 366);
+  assert.equal(ticks(leap).length, 12);
+  assert.equal(isoDay(ticks(leap)[2].day), "2028-03-01");
+  assert.equal(isoDay(leap.start + leap.size - 1), "2028-12-31");
+  assert.equal(calendarYear(leap.start, -1).size, 365);
+});
 test("Milestones are points even when a card contains an old start", () => {
   const row = {kind: "milestone", start: "2026-01-01", due: "2026-11-15", forecast: "2026-11-18"};
   assert.deepEqual(scheduleMarks(row, november).map(mark => mark.kind), ["due", "forecast"]);
@@ -28,6 +37,15 @@ test("Fit uses recorded dates and only uses today as the fallback for an empty t
   const full = fitWindow([{due:"2026-11-11"}, {start:"2026-12-11"}], dayOf("2001-01-01"));
   assert.ok(full.start < dayOf("2026-11-11") && full.start + full.size > dayOf("2026-12-11"));
   assert.ok(ticks(full).length <= 10);
+});
+test("fit can include the project's own due date after the last task", () => {
+  const end = "2027-12-31";
+  const tasks = [{start:"2027-01-12", due:"2027-04-15"}, {}];
+  const span = fitWindow(tasks, november.start, {due:end});
+  assert.ok(span.start <= dayOf("2027-01-12") && span.start + span.size > dayOf(end));
+  assert.deepEqual(tasks[1], {});
+  const wholeYear = fitWindow([], november.start, {projectStart:"2027-01-01", due:end});
+  assert.ok(wholeYear.start <= dayOf("2027-01-01") && wholeYear.start + wholeYear.size > dayOf(end));
 });
 
 test("Moving a forecast leaves the planned span and deadline in place", () => {

@@ -197,10 +197,13 @@ class Gantt:
         self.root = self.planning.root
 
     def view(self, plan_id):
-        plan = self.planning.view(plan_id)
-        if plan["status"] == "active":
-            self.planning._group_titles(plan)
-        return plan
+        from .okr import KeyResults
+        from .plan_tree import outline as plan_outline
+        board = KeyResults(self.root).board(plan_id)
+        outline = [{"id": goal["id"], "title": goal["title"],
+                    "results": [{k: kr[k] for k in ("id", "title", "taskIds")} for kr in goal["results"]]}
+                   for goal in board["objectives"]]
+        return {**board["plan"], "items": board["items"], "objectives": outline, "tree": plan_outline(board)}
 
     def detail(self, task_id, *, all_entries=False):
         path, _, record, _ = self.planning._find("task", task_id)

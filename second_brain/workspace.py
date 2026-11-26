@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from . import storage
+from .okr import KeyResults
 from .people import People
 from .planning import Planning
 from .teams import Teams
@@ -11,7 +12,7 @@ from .teams import Teams
 
 # Public API spelling and the corresponding user-editable YAML fields.
 FIELDS = {"title": "title", "aliases": "aliases", "direction": "direction",
-          "status": "status", "due": "due", "nextStep": "next_step"}
+          "status": "status", "due": "due", "projectStart": "project_start", "nextStep": "next_step"}
 
 
 class Workspace:
@@ -23,10 +24,11 @@ class Workspace:
     def _summary(self, path, record):
         relative = path.relative_to(self.root).as_posix()
         result = {"id": record["id"], "type": record["type"], "path": relative}
-        result.update({name: record.get(field) for name, field in FIELDS.items()})
+        fields = {name: field for name, field in FIELDS.items() if name != "projectStart" or record["type"] == "project"}
+        result.update({name: record.get(field) for name, field in fields.items()})
         result["fieldSources"] = {
             name: {"path": relative, "line": record["field_lines"][field]}
-            for name, field in FIELDS.items() if result[name] is not None and field in record["field_lines"]
+            for name, field in fields.items() if result[name] is not None and field in record["field_lines"]
         }
         return result
 
@@ -48,7 +50,8 @@ class Workspace:
         person_paths = [p.relative_to(self.root) for p in People(self.root).card_paths()]
         team_paths = (p.relative_to(self.root) for p in Teams(self.root).card_paths())
         work_paths = (p.relative_to(self.root) for p in Planning(self.root).card_paths())
-        for relative in [*(Path(r["path"]) for r in records), *person_paths, *team_paths, *work_paths]:
+        okr_paths = (p.relative_to(self.root) for p in KeyResults(self.root).card_paths())
+        for relative in [*(Path(r["path"]) for r in records), *person_paths, *team_paths, *work_paths, *okr_paths]:
             for directory in relative.parents:
                 if directory != Path("."):
                     key = directory.as_posix()
@@ -74,7 +77,7 @@ class Workspace:
             raise ValueError("В запросе создания есть неподдерживаемые поля.")
         path = storage.create(self.root, data.get("type"), data.get("title"), data.get("body", ""),
                               aliases=data.get("aliases"), direction=data.get("direction"),
-                              status=data.get("status"), due=data.get("due"),
+                              status=data.get("status"), due=data.get("due"), project_start=data.get("projectStart"),
                               next_step=data.get("nextStep"), request_id=data.get("requestId"))
         return self._detail(path)
 

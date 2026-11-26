@@ -11,6 +11,7 @@ import tempfile
 import threading
 import uuid
 from contextlib import contextmanager, suppress
+from datetime import date
 from html import escape
 from pathlib import Path
 from urllib.parse import quote
@@ -18,7 +19,7 @@ from urllib.parse import quote
 
 KINDS = {"direction": "Directions", "note": "Notes", "project": "Projects"}
 STATE_FIELDS = ("status", "due", "next_step")
-EDITABLE = {"title", "aliases", "direction", *STATE_FIELDS}
+EDITABLE = {"title", "aliases", "direction", "project_start", *STATE_FIELDS}
 FOLDERS = (
     "Inbox", *KINDS.values(), "People", "Plans", "Tasks", "Reports", "Sources/Originals",
     "Sources/Processed", "Archive", "Settings/Formats", "Settings/Templates",
@@ -187,12 +188,14 @@ def _parse_record(path, data, *, kinds=KINDS, optional_scalars=()):
         key, sep, value = line.partition(":")
         if not sep or key not in {"id", "type", "schema_version", "creation_hash", *EDITABLE, *optional_scalars}:
             continue
+        if key == "project_start" and "project" not in types:
+            continue
         if key in field_lines:
             raise ValueError(f"Повтор поля {key}: {path}")
         field_lines[key] = number
         if key == "aliases":
             fields[key] = _aliases(value)
-        elif key in (*STATE_FIELDS, "direction", *optional_scalars):
+        elif key in (*STATE_FIELDS, "direction", "project_start", *optional_scalars):
             # These optional fields were user-owned in older records. Keep complex
             # YAML values opaque; only show actual one-line scalars in the overview.
             value = value.strip()
@@ -276,10 +279,34 @@ def _validate_fields(values):
         aliases = values["aliases"]
         if not isinstance(aliases, list) or not all(isinstance(a, str) and a.strip() for a in aliases):
             raise ValueError("Алиасы должны быть списком непустых строк.")
-    for key in ("direction", *STATE_FIELDS):
+    for key in ("direction", "project_start", *STATE_FIELDS):
         value = values.get(key)
         if value is not None and not (isinstance(value, str) and value.strip() and value.splitlines() == [value]):
             raise ValueError(f"Поле {key} должно содержать одну непустую строку.")
+
+
+def _iso_date(value):
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            pass
+    return None
+
+
+def _validate_project_dates(kind, record, changes):
+    if kind != "project":
+        if "project_start" in changes:
+            raise ValueError("Согласованное начало указывается только в карточке проекта.")
+        return
+    if not any(k in changes and changes[k] != record.get(k) for k in ("project_start", "due")):
+        return
+    start = _iso_date(changes.get("project_start", record.get("project_start")))
+    due = _iso_date(changes.get("due", record.get("due")))
+    if changes.get("project_start") is not None and changes["project_start"] != record.get("project_start") and start is None:
+        raise ValueError("Согласованное начало проекта должно быть календарной датой ГГГГ-ММ-ДД.")
+    if start and due and start > due:
+        raise ValueError("Согласованное начало проекта позже его срока.")
 
 
 def _check_direction(root, kind, direction):
@@ -289,14 +316,16 @@ def _check_direction(root, kind, direction):
 
 
 def create(root: Path, kind: str, title: str, body: str = "", aliases=None, direction=None,
-           *, status=None, due=None, next_step=None, request_id=None) -> Path:
+           *, status=None, due=None, next_step=None, project_start=None, request_id=None) -> Path:
     root = Path(root).resolve()
     if not isinstance(kind, str) or kind not in KINDS:
         raise ValueError("Укажите тип записи.")
     fields = {"type": kind, "schema_version": 1, "title": title, "aliases": [] if aliases is None else aliases}
-    optional = {"direction": direction, "status": status, "due": due, "next_step": next_step}
+    optional = {"direction": direction, "status": status, "due": due, "next_step": next_step,
+                "project_start": project_start}
     fields.update({key: value for key, value in optional.items() if value is not None})
     _validate_fields({**fields, "body": body})
+    _validate_project_dates(kind, {}, fields)
     if request_id is None:
         fields["id"] = str(uuid.uuid4())
         return _publish_record(root, fields, body)
@@ -440,6 +469,7 @@ def edit(root: Path, record_id: str, revision: str, changes: dict) -> Path:
         record, header = _parse_record(path, data)
         if record["id"] != record_id or record["revision"] != revision:
             raise ConflictError(f"Файл изменился. Перечитайте запись: {path}")
+        _validate_project_dates(record["type"], record, changes)
         if "direction" in changes and changes["direction"] != record["direction"]:
             _check_direction(root, record["type"], changes["direction"])
         metadata = {key: value for key, value in changes.items()

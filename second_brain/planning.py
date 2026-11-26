@@ -55,6 +55,15 @@ def _membership(body):
     return ids, ends[0]
 
 
+def _insert_task(lines, end, task, target, plan_path, newline):
+    link = storage.markdown_link(task["title"], target, plan_path.parent)
+    member = f"- {link} {storage.id_marker('task', task['id'])}{newline}"
+    if end is None:
+        lines.extend([newline, _BEGIN + newline, member, _END + newline])
+    else:
+        lines.insert(end, member)
+
+
 class Planning:
     def __init__(self, root):
         self.root = Path(root).expanduser().resolve()
@@ -150,24 +159,42 @@ class Planning:
         return self.memberships(include_closed=False)
 
     def memberships(self, *, include_closed):
-        for path, _, record, _ in self._entries("plan"):
-            closed = closed_metadata(record)
-            if closed is None:
-                yield self._summary(path, record), _membership(record["body"])[0]
-            elif include_closed:
-                yield self._plan_summary(path, record, closed), [row["id"] for row in frozen_rows(record, closed)]
+        from .okr import KeyResults
+        with storage._vault_lock(self.root, write=False):
+            plans = [(path, record, closed_metadata(record)) for path, _, record, _ in self._entries("plan")]
+            linked = KeyResults(self.root).plan_task_ids({r["id"] for _, r, closed in plans if closed is None})
+            memberships = []
+            for path, record, closed in plans:
+                if closed is None:
+                    direct, _ = _membership(record["body"])
+                    members = list(dict.fromkeys([*direct, *linked.get(record["id"], ())]))
+                elif include_closed:
+                    members = [row["id"] for row in frozen_rows(record, closed)]
+                else:
+                    continue
+                summary = self._summary(path, record) if closed is None else self._plan_summary(path, record, closed)
+                memberships.append((summary, members))
+        yield from memberships
 
     def view(self, plan_id):
         with storage._vault_lock(self.root, write=False):
             path, _, plan, _ = self._find("plan", plan_id)
             return self._view(path, plan)
 
-    def _view(self, path, plan, *, validate_dates=False):
+    def _view(self, path, plan, *, validate_dates=False, linked_task_ids=None):
+        from .plan_tree import check_parents, parent_links
         closed = closed_metadata(plan)
         result = self._plan_summary(path, plan, closed)
         if closed is not None:
-            return {**result, "items": frozen_rows(plan, closed)}
+            result["items"] = frozen_rows(plan, closed)
+            if closed.get("includedProjects"):
+                result["includedProjectCount"] = len(closed["includedProjects"])
+            return result
         ids, _ = _membership(plan["body"])
+        if linked_task_ids is None:
+            from .okr import KeyResults
+            linked_task_ids = KeyResults(self.root).plan_task_ids({plan["id"]}).get(plan["id"], ())
+        ids = list(dict.fromkeys([*ids, *linked_task_ids]))
         if not ids:
             return {**result, "items": []}
         needed = set(ids)
@@ -191,6 +218,11 @@ class Planning:
                               "revision": None, "project": None, "direction": None, "start": None, "startLine": None,
                               "due": None, "dueLine": None, "forecast": None, "forecastLine": None,
                               "completed": None, "completedLine": None})
+        parents = parent_links(plan["body"])
+        check_parents(parents)
+        for row in items:
+            if row["id"] in parents:
+                row["parentId"] = parents[row["id"]]
         return {**result, "items": items}
 
     def _group_titles(self, plan):
@@ -271,13 +303,7 @@ class Planning:
             if expected_revision is not None and expected_revision != plan["revision"]:
                 raise storage.ConflictError("План изменился. Перечитайте его перед добавлением задачи.")
             newline = "\r\n" if header.startswith(b"---\r\n") else "\n"
-            link = storage.markdown_link(task["title"], target, path.parent)
-            member = f"- {link} {storage.id_marker('task', task_id)}{newline}"
-            if end is None:
-                body = plan["body"] + newline + _BEGIN + newline + member + _END + newline
-            else:
-                lines = plan["body"].splitlines(keepends=True)
-                lines.insert(end, member)
-                body = "".join(lines)
-            storage.replace_bytes(path, data, header + body.encode())
+            lines = plan["body"].splitlines(keepends=True)
+            _insert_task(lines, end, task, target, path, newline)
+            storage.replace_bytes(path, data, header + "".join(lines).encode())
             return self.view(plan_id)
