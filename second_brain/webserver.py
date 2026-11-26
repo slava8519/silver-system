@@ -181,7 +181,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, demo_cleanup.preview(self.server.vault.root))
             return
         elif self.mode == "work" and path == "/api/workspace":
-            self._send(200, self.server.vault.overview())
+            self._send(200, {**self.server.vault.overview(), "root": str(self.server.vault.root)})
+            return
+        elif self.mode == "work" and path == "/api/direction-states":
+            from .direction_overview import direction_overview
+            result = direction_overview(self.server.vault.root, limit=int(params.get("limit", 5)),
+                                        offset=int(params.get("offset", 0)), direction=params.get("direction"))
+            self._send(200, result)
             return
         elif self.mode == "work" and path in ("/api/map", "/api/map/source"):
             from .relation_map import RelationMap
@@ -649,20 +655,36 @@ class Handler(BaseHTTPRequestHandler):
                        else ("/#ask", "Вопросы по направлениям"))
         try:
             number = params.get("line", [""])[0]
-            record, source = self.reader.open_citation({
-                "id": record_id, "line": int(number) if number.isdecimal() else None,
-                "ref": params.get("ref", [None])[0],
-            })
+            number = int(number) if number.isdecimal() else None
+            ref = params.get("ref", [None])[0]
+            if self.mode == "work" and params.get("kind") == ["task"]:
+                from .planning import Planning
+                from .query import _line_ref
+                root = self.server.vault.root
+                path, raw, record, _ = Planning(root)._find("task", record_id)
+                lines = raw.decode("utf-8").splitlines()
+                if not number or not ref:
+                    raise ValueError("Для источника работы нужны строка и её отпечаток.")
+                if number > len(lines) or _line_ref(lines[number-1]) != ref:
+                    matches = [i for i, text in enumerate(lines, 1) if _line_ref(text) == ref]
+                    if len(matches) != 1:
+                        raise storage.ConflictError("Строка работы изменилась. Обновите обзор.")
+                    number = matches[0]
+                source = {"start": number, "path": path.relative_to(root).as_posix()}
+                visible = [(number, lines[number-1])]
+            else:
+                record, source = self.reader.open_citation({"id": record_id, "line": number, "ref": ref})
+                if source["start"] < record["body_start"]:
+                    visible = ((item["n"], item["text"]) for item in source["lines"])
+                else:
+                    visible = visible_body_lines(record)
         except (ValueError, OSError) as error:
             message = str(error) if isinstance(error, ValueError) else "Исходный файл больше не доступен."
             document = self._source_document("Не удалось открыть источник", f"<p>{escape(message)}</p>", back, label)
             self._send(409 if isinstance(error, storage.ConflictError) else 404, document, "text/html; charset=utf-8")
             return
         rows = []
-        lines = visible_body_lines(record)
-        if source["start"] < record["body_start"]:
-            lines = ((item["n"], item["text"]) for item in source["lines"])
-        for n, line in lines:
+        for n, line in visible:
             attrs = 'class="source-line highlight" id="cited-line"' if n == source["start"] else 'class="source-line"'
             rows.append(f'<div {attrs}><span class="line-number">{n}</span><code class="line-text">{escape(line)}</code></div>')
         context = (f'<p class="source-path">{escape(source["path"])}</p>'

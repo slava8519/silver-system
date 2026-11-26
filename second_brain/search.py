@@ -6,7 +6,7 @@ import re
 import sqlite3
 import tempfile
 import unicodedata
-from contextlib import closing
+from contextlib import closing, contextmanager
 from itertools import chain
 from pathlib import Path
 from typing import Optional
@@ -155,6 +155,30 @@ def rebuild(root: Path):
     _build(root, database, _signature(root))
 
 
+@contextmanager
+def _current_index(root):
+    database = _database(root)
+    signature = _signature(root)
+    if database.is_file():
+        with _read_index(database) as db:
+            try:
+                current = db.execute("SELECT signature FROM metadata").fetchone() == (signature,)
+            except sqlite3.DatabaseError:
+                current = False
+            if current:
+                yield db, False
+                return
+    _build(root, database, signature)
+    with _read_index(database) as db:
+        yield db, True
+
+
+def refresh_index(root: Path):
+    """Bring the shared search index up to date; return whether it was rebuilt."""
+    with _current_index(Path(root).resolve()) as (_, rebuilt):
+        return rebuilt
+
+
 def _results(db, expression, limit, record_id, name):
     db.row_factory = sqlite3.Row
     rows = db.execute("""
@@ -181,18 +205,13 @@ def search(root: Path, query: str, limit: int = 5, *, record_id: Optional[str] =
     if not expression:
         return []
     root = Path(root).resolve()
-    database = _database(root)
     name = "\x1f" + " ".join(word_stems(query)) + "\x1f"
-    signature = _signature(root)
-    if database.is_file():
-        try:
-            with _read_index(database) as db:
-                if db.execute("SELECT signature FROM metadata").fetchone() == (signature,):
-                    return _results(db, expression, limit, record_id, name)
-        except sqlite3.DatabaseError:
-            pass  # A missing or damaged cache can be reconstructed from the files.
-    _build(root, database, signature)
-    with _read_index(database) as db:
+    try:
+        with _current_index(root) as (db, _):
+            return _results(db, expression, limit, record_id, name)
+    except sqlite3.DatabaseError:
+        rebuild(root)  # Metadata can survive damage to the full-text table.
+    with _read_index(_database(root)) as db:
         return _results(db, expression, limit, record_id, name)
 
 

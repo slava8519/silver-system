@@ -6,6 +6,8 @@ import { activityHelp } from "./activity-help.js";
 import { mountRelationMap } from "./relation-map.js";
 import { relationMapHelp } from "./relation-map-help.js";
 import { projectUpdatesPanel } from "./project-updates.js";
+import { mountDirectionStates } from "./direction-states.js";
+import { renderOverviewCommands } from "./overview-commands.js";
 
 (() => {
   const main = document.getElementById("content");
@@ -133,75 +135,32 @@ import { projectUpdatesPanel } from "./project-updates.js";
     return a;
   }
 
-  function projectTable(projects) {
-    const panel = section("Состояние проектов");
-    if (!projects.length) {
-      panel.append(node("p", "muted", "В хранилище пока нет проектов."), link("Создать проект", "#new/project", "text-link"));
-      return panel;
-    }
-    const table = node("table", "projects-table");
-    const tr = table.createTHead().insertRow();
-    for (const name of ["Проект", ...Object.values(fields)]) {
-      const th = node("th", "", name);
-      th.scope = "col";
-      tr.append(th);
-    }
-    const body = table.createTBody();
-    for (const record of projects) {
-      const row = body.insertRow();
-      const first = row.insertCell();
-      first.append(link(record.title, recordURL(record.id), "table-title"));
-      if (record.aliases?.length) first.append(node("span", "table-scope", record.aliases.join(" · ")));
-      first.append(node("span", "table-scope", scopeName(record)));
-      for (const key of Object.keys(fields)) {
-        const td = row.insertCell();
-        td.dataset.label = fields[key];
-        td.append(fieldValue(record, key));
-      }
-    }
-    panel.append(table);
-    return panel;
-  }
-
   async function overview() {
-    const cleanup = node("div");
-    cleanup.hidden = true;
-    main.append(pageHead(data.name, sections.overview, button("Обновить", "button button-secondary", render), newLink(), cleanup));
+    main.append(pageHead(data.name, sections.overview, button("Обновить обзор", "button button-secondary", render), newLink()));
     const receipt = cleanupNotice(node);
     if (receipt) main.append(receipt);
-    const stats = node("div", "work-stats");
-    for (const [type, caption] of [["direction","Направления"],["project","Проекты"],["note","Заметки"]]) {
-      const metric = link("", "#records?type=" + type, "work-stat metric-" + type);
-      metric.append(node("span", "metric-name", caption), node("strong", "metric-count", data.records.filter(r => r.type === type).length));
+    const stats = node("nav", "work-stats");
+    stats.setAttribute("aria-label", "Состав хранилища");
+    for (const [type, caption] of [["direction","Направления"],["project","Проекты"],["note","Заметки"],["person","Люди"]]) {
+      const href = type === "person" ? "#people" : "#records?type=" + type;
+      const count = type === "person" ? data.peopleCount : data.records.filter(r => r.type === type).length;
+      const metric = link("", href, "work-stat");
+      metric.append(node("span", "metric-name", caption), node("strong", "metric-count", count));
       stats.append(metric);
     }
-    if (typeof data.peopleCount === "number") {
-      const people = link("", "#people", "work-stat metric-people");
-      people.append(node("span", "metric-name", "Люди"), node("strong", "metric-count", data.peopleCount));
-      stats.append(people);
-      stats.classList.add("with-people");
-    }
-    const row = node("div", "overview-row");
-    const areas = section("Направления", "work-panel directions-panel");
-    if (!directions.length) areas.append(node("p", "muted", "Создайте направление для постоянной области вашей жизни или работы."), link("Создать направление", "#new/direction", "text-link"));
-    else {
-      const list = node("ul", "area-list");
-      for (const area of directions) {
-        const records = data.records.filter(r => r.direction === area.id);
-        const l = link("", recordURL(area.id), "area-link");
-        l.append(node("span","area-tab",""), node("span","area-title",area.title), node("span","area-count",counted(records.length,["карточка","карточки","карточек"])));
-        const li = node("li");
-        li.append(l);
-        list.append(li);
-      }
-      areas.append(list);
-    }
-    const capture = section("Входящие", "work-panel inbox-shortcut");
-    capture.append(node("p", "muted", "Сохраните текст, файл или скриншот переписки для следующего разбора в Codex."),
-      link("Добавить материал", "#inbox", "button button-primary"));
-    row.append(areas, capture);
-    main.append(stats, row, projectTable(data.records.filter(r => r.type === "project")), folderPanel());
-    await mountCleanup(cleanup, api, node);
+
+    const layout = node("div", "overview-layout");
+    const states = node("div", "overview-states");
+    const sidebar = node("div", "overview-sidebar");
+    const cleanup = node("div", "overview-maintenance");
+    cleanup.hidden = true;
+    sidebar.append(renderOverviewCommands({node, button}, data.root), folderPanel(), cleanup);
+    layout.append(states, sidebar);
+    main.append(stats, layout);
+    await Promise.all([
+      mountDirectionStates(states, {node, link, button, section, notice, api, recordURL, counted}),
+      mountCleanup(cleanup, api, node)
+    ]);
   }
 
   function recordRow(record) {
@@ -309,7 +268,13 @@ import { projectUpdatesPanel } from "./project-updates.js";
     }
     if (record.type === "project") panel.append(recordFacts(record));
     const selectedField = params.get("field");
-    const selectedLine = record.fieldSources?.[selectedField]?.line;
+    const requestedLine = Number(params.get("line"));
+    const outdated = params.has("revision") && params.get("revision") !== record.revision;
+    const selectedLine = record.fieldSources?.[selectedField]?.line ||
+      (!outdated && Number.isSafeInteger(requestedLine) && requestedLine > 0 && requestedLine <= record.raw.split(/\r?\n/).length
+        ? requestedLine : null);
+    if (outdated) panel.append(notice("Карточка изменилась после открытия обзора. Сверьте новую версию."),
+      link("Вернуться к обзору", "#overview", "text-link"));
     if (fullWorkspace) panel.append(button("Открыть в Obsidian ↗", "button button-secondary",
       () => openObsidianSource(record.path, selectedLine)));
     if (selectedField && !selectedLine) panel.append(node("p","muted","Поле сейчас не задано."));
@@ -339,6 +304,7 @@ import { projectUpdatesPanel } from "./project-updates.js";
     }
     if (!record.body && !record.aliases?.length && record.type !== "project") panel.append(node("p","muted","Текст карточки пока пуст."));
     main.append(panel);
+    if (selectedLine && requestedLine) lines.querySelector(".highlight")?.scrollIntoView({block: "center"});
     if (!record.direction && record.type !== "direction") return;
     const mapURL = "#map?" + new URLSearchParams({id});
     if (record.type !== "direction") {

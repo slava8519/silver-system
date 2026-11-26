@@ -32,10 +32,11 @@ def command_line():
     ask.add_argument("--limit", type=brief.result_limit, help="число записей в кратком ответе (1–20, обычно 5)")
     overview = commands.add_parser("overview", help="показать состав и записанное состояние хранилища")
     overview.add_argument("--brief", action="store_true", help="показать только количество карточек по типам")
-    overview.add_argument("--direction", metavar="ID", help="посчитать карточки выбранного направления с --brief")
+    overview.add_argument("--states", action="store_true", help="показать сводки направлений и последние события с источниками")
+    overview.add_argument("--direction", metavar="ID", help="выбрать направление для --brief или --states")
     overview.add_argument("--folders", action="store_true", help="показать только пути папок и количество карточек")
-    overview.add_argument("--limit", type=brief.result_limit, help="число папок с --folders (1–20, обычно 5)")
-    overview.add_argument("--offset", type=brief.offset, help="сколько папок пропустить с --folders")
+    overview.add_argument("--limit", type=brief.result_limit, help="число направлений или папок на странице (1–20, обычно 5)")
+    overview.add_argument("--offset", type=brief.offset, help="сколько направлений или папок пропустить")
     create = commands.add_parser("create", help="создать направление, проект или заметку")
     create.add_argument("kind", choices=("direction", "project", "note"))
     create.add_argument("title")
@@ -77,6 +78,10 @@ def command_line():
     read.add_argument("start", type=int)
     read.add_argument("end", type=int)
     commands.add_parser("rebuild", help="пересобрать поисковый индекс из файлов")
+    refresh = commands.add_parser("refresh-all", help="обновить все сводки и истории по подтверждённым записям")
+    refresh.add_argument("--limit", type=brief.result_limit, default=brief.DEFAULT_LIMIT,
+                         help="сколько замечаний показать после полного обхода (1–20)")
+    refresh.add_argument("--offset", type=brief.offset, default=0, help="сколько замечаний пропустить в выдаче")
     intake_cli.add_commands(commands)
     planning_cli.add_commands(commands)
     okr_cli.add_commands(commands)
@@ -161,6 +166,9 @@ def run(args):
         return project_activity_cli.run(root, args)
     if args.command in ("project-updates", "project-update"):
         return project_updates_cli.run(root, args)
+    if args.command == "refresh-all":
+        from .refresh import refresh_all
+        return refresh_all(root, limit=args.limit, offset=args.offset)
     if args.command == "map":
         return relation_map_cli.run(root, args)
     if getattr(args, "teams", False):
@@ -189,12 +197,18 @@ def run(args):
         from .workspace import Workspace
         workspace = Workspace(root)
         if args.command == "overview":
+            if args.states:
+                if args.brief or args.folders:
+                    raise ValueError("Для сводок направлений выберите только --states.")
+                from .direction_overview import direction_overview
+                return direction_overview(root, direction=args.direction, limit=args.limit or brief.DEFAULT_LIMIT,
+                                          offset=args.offset or 0)
             if args.folders:
                 if args.direction:
                     raise ValueError("Папки относятся ко всему хранилищу. Уберите --direction.")
                 return brief.page(workspace.overview()["folders"], args.limit or brief.DEFAULT_LIMIT, args.offset or 0)
             if args.limit or args.offset is not None:
-                raise ValueError("Для постраничного перечня папок укажите --folders.")
+                raise ValueError("Для постраничного просмотра укажите --states или --folders.")
             if args.direction and not args.brief:
                 raise ValueError("Для сводки по одному направлению укажите --brief.")
             result = workspace.overview()
@@ -244,10 +258,10 @@ def main():
         return 0
     if isinstance(result, str):
         print(result)
-    elif (getattr(args, "brief", False) or getattr(args, "folders", False) or getattr(args, "intake", False)
+    elif (getattr(args, "brief", False) or getattr(args, "folders", False) or getattr(args, "states", False) or getattr(args, "intake", False)
           or getattr(args, "planning", False) or getattr(args, "okr", False) or getattr(args, "teams", False)
           or getattr(args, "plan_tree", False) or getattr(args, "okr_progress", False)
-          or getattr(args, "project_activity", False) or args.command in ("map", "weekly-review", "project-updates", "project-update")
+          or getattr(args, "project_activity", False) or args.command in ("map", "weekly-review", "project-updates", "project-update", "refresh-all")
           or (args.command == "list" and isinstance(result, dict))):
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
     else:
