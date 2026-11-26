@@ -6,8 +6,9 @@ import os
 from pathlib import Path
 import re
 
-from . import cycles, dependencies, okr, okr_criteria, okr_links, okr_progress, people
+from . import cycles, dependencies, gantt, okr, okr_criteria, okr_links, okr_progress, people
 from . import plan_tree, planning, project_membership, project_updates, reports, storage, teams
+from .schedule import schedule_history
 
 
 _FOLDERS = (*storage.KINDS.values(), "Tasks", "Plans", "People", "Reports",
@@ -139,6 +140,10 @@ def _body_links(record, path, report):
         start, due = (storage._iso_date(record.get(k)) for k in ("start", "due"))
         if start and due and start > due:
             report.add("record.date", path, record["field_lines"]["due"], "Согласованный срок раньше начала работы.")
+        gantt._row_fields(record, all_entries=True)
+        schedule_history(record, path)
+    elif kind == "report_issue":
+        reports.issue_content(record)
     elif kind == "person":
         for fact in people._parse_facts(record).values():
             report.fact_source(path, fact)

@@ -186,6 +186,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/demo-cleanup":
             self._send(200, demo_cleanup.preview(self.server.vault.root))
             return
+        elif self.mode == "work" and path == "/api/workspace/context":
+            self._send(200, self.server.vault.context(directions=params.get("directions") == "1"))
+            return
         elif self.mode == "work" and path == "/api/workspace":
             self._send(200, {**self.server.vault.overview(), "root": str(self.server.vault.root)})
             return
@@ -193,9 +196,8 @@ class Handler(BaseHTTPRequestHandler):
             from .vault_check import check_vault
             limit = int(params.get("limit", brief.DEFAULT_LIMIT))
             offset = int(params.get("offset", 0))
-            if not 1 <= limit <= 20 or offset < 0:
-                raise ValueError("Укажите от 1 до 20 замечаний и неотрицательное смещение.")
-            self._send(200, check_vault(self.server.vault.root, limit=limit, offset=offset))
+            self._send(200, check_vault(self.server.vault.root, limit=limit, offset=offset,
+                                        snapshot=params.get("snapshot")))
             return
         elif self.mode == "work" and path == "/api/direction-states":
             from .direction_overview import direction_overview

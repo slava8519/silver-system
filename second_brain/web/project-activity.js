@@ -41,7 +41,7 @@ export function catalogRows(scope, rows) {
   return {[scope]: rows[scope]};
 }
 
-export async function activityCatalog(ui, view) {
+export async function activityCatalog(ui, view, defaultScope = "all") {
   const {api, node, link, button, option, labelled, counted} = ui;
   const data = await api("plan/activity");
   if (!view.isConnected) return;
@@ -52,7 +52,7 @@ export async function activityCatalog(ui, view) {
   const [route, query] = location.hash.split("?");
   const params = new URLSearchParams(query);
   const requestedView = params.get("view");
-  let scope = ["okr", "unassigned"].includes(requestedView) || Object.hasOwn(scopes, requestedView) ? requestedView : "all";
+  let scope = ["okr", "unassigned"].includes(requestedView) || Object.hasOwn(scopes, requestedView) ? requestedView : defaultScope;
   let page = Math.max(1,Number.parseInt(params.get("page"),10) || 1);
   const selectedDirection = params.get("direction");
   const createProject = link("Создать проект", "#new/project", "button button-primary");
@@ -94,12 +94,14 @@ export async function activityCatalog(ui, view) {
   }
   function persist() {
     const state = new URLSearchParams();
-    if (scope !== "all") state.set("view",scope);
+    if (scope !== defaultScope) state.set("view",scope);
     if (direction.value) state.set("direction",direction.value);
     if (search.value.trim()) state.set("q",search.value.trim());
     if (scope !== "all" && page > 1) state.set("page",String(page));
     const next = route + (state.size ? "?" + state : "");
-    help.href = "#activity-help" + (state.size ? "?" + state : "");
+    const helpState = new URLSearchParams(state);
+    if (scope !== "all") helpState.set("view",scope);
+    help.href = "#activity-help" + (helpState.size ? "?" + helpState : "");
     if (next !== location.hash) history.replaceState(null,"",next);
   }
   function update() { page = 1; draw(); }

@@ -70,25 +70,13 @@ def _measured_date(value):
     return planning.validate_due(value)
 
 
-_MONTHS = ("января", "февраля", "марта", "апреля", "мая", "июня",
-           "июля", "августа", "сентября", "октября", "ноября", "декабря")
-_DATE_PATTERNS = (
-    re.compile(r"(?<!\d)(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})(?!\d)"),
-    re.compile(r"(?<!\d)(?P<day>\d{1,2})\.(?P<month>\d{1,2})\.(?P<year>\d{4})(?!\d)"),
-    re.compile(r"(?<!\d)(?P<day>\d{1,2})\s+(?P<month>" + "|".join(_MONTHS) + r")\s+(?P<year>\d{4})(?!\d)", re.I),
-)
 _GROUPED_INTEGER = r"[0-9]{1,3}(?:[ \u00a0\u202f][0-9]{3})+"
 _QUANTITY = rf"(?<![\w.,+−/-])([+−-]?(?:(?:{_GROUPED_INTEGER}|[0-9]+)(?:[.,][0-9]+)?|[.,][0-9]+))"
 _UNGROUP = str.maketrans("", "", " \u00a0\u202f")
 
 
 def _check_date(date, line):
-    dates = {}
-    for pattern in _DATE_PATTERNS:
-        for m in pattern.finditer(line):
-            month = m["month"].lower()
-            number = _MONTHS.index(month) + 1 if month in _MONTHS else int(month)
-            dates[m.span()] = f'{m["year"]}-{number:02}-{int(m["day"]):02}'
+    dates = evidence.date_spans(line)
     if dates and date not in dates.values():
         raise ValueError("Дата измерения расходится с датой в источнике.")
     return dates

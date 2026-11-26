@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {planningView} from "../second_brain/web/gantt.js";
 import {dateText} from "../second_brain/web/gantt-axis.js";
 import {catalogRows, projectDates} from "../second_brain/web/project-activity.js";
 import {eligibleWork, relationshipFacts} from "../second_brain/web/project-participation.js";
@@ -52,4 +53,21 @@ test("partial dates display their source and an empty project acquires no horizo
   assert.deepEqual(projectDates({projectStart:"2026-01-01"}), ["Начало проекта · " + dateText("2026-01-01")]);
   assert.deepEqual(projectDates({due:"после решения комиссии"}), ["Срок проекта · после решения комиссии"]);
   assert.deepEqual(projectDates({start:"2026-02-01",end:"2026-02-01"}), ["Даты работ · " + dateText("2026-02-01")]);
+});
+
+test("plan and activity entry points use one catalogue; the chart keeps its plan chooser", async () => {
+  const calls = [];
+  const open = planningView({api: async path => { calls.push(path); return {}; }});
+  const view = {isConnected: false};
+  try {
+    for (const route of ["plans", "activity"]) {
+      globalThis.location = {hash: "#" + route};
+      await open(view, null, null, route);
+      assert.deepEqual(calls.splice(0), ["plan/activity"]);
+    }
+  } finally {
+    delete globalThis.location;
+  }
+  await open(view, "period", null, "plan");
+  assert.deepEqual(calls, ["plans", "plan?id=period"]);
 });

@@ -6,8 +6,10 @@ from examples import inbox_vault, okr_review_vault, report_vault
 from second_brain import reports, storage
 from second_brain.check_records import check_records
 from second_brain.cycles import Cycles
+from second_brain.gantt import Gantt
 from second_brain.planning import Planning
 from second_brain.teams import Teams
+from second_brain.vault_check import check_vault
 
 
 class Report:
@@ -142,3 +144,48 @@ class RecordCheckTests(unittest.TestCase):
         self.assertEqual(len(list((self.root / reports.TEMPLATES).rglob("*.md"))), 2)
         count, checked = self.scan()
         self.assertEqual((count, checked.issues), (2, []))
+
+    def test_gantt_read_and_vault_check_locate_the_same_unclosed_task_entry(self):
+        task = Planning(self.root).create_task("Первая проба")
+        gantt = Gantt(self.root)
+        secret = "Личная формулировка результата"
+        gantt.edit({"id": task["id"], "revision": task["revision"], "field": "brief", "text": secret,
+                    "actor": "manual"})
+        path = self.root / task["path"]
+        self.assertEqual(check_vault(self.root)["status"], "ok")
+        text = path.read_text().replace("<!-- /brain-gantt -->", "")
+        path.write_text(text)
+        line = next(n for n, s in enumerate(text.splitlines(), 1) if s.startswith("<!-- brain-gantt: "))
+        with self.assertRaises(ValueError):
+            gantt.detail(task["id"])
+        result = check_vault(self.root)
+        problem, = result["issues"]["items"]
+        self.assertEqual((result["status"], problem["code"], problem["path"], problem["line"]),
+                         ("issues", "record.structure", task["path"], line))
+        self.assertNotIn(secret, repr(result))
+
+    def test_issue_read_and_vault_check_locate_invalid_source_metadata_and_unclosed_footer(self):
+        issue = reports.save_issue(self.root, title="Проба", body="Взяли первый образец.",
+                                   template_id="free-report", template_version=1,
+                                   sources=[{"path": "Home.md", "line": 1}])
+        path = self.root / issue["path"]
+        text = path.read_text()
+        path.write_bytes(text.replace("\n", "\r\n").encode())
+        self.assertEqual(check_vault(self.root)["status"], "ok")
+        self.assertEqual(reports.get_issue(self.root, issue["id"])["body"], issue["body"])
+        source_line = next(line for line in text.splitlines() if line.startswith(reports._SOURCE))
+        secret = "приватный фрагмент"
+        cases = [(text.replace(reports._END, ""), reports._FOOTER),
+                 (text.replace(source_line, reports._SOURCE + secret + " -->"), source_line),
+                 (text.replace(source_line, source_line[:-4]), source_line)]
+        for invalid, original in cases:
+            with self.subTest(original=original):
+                path.write_text(invalid)
+                line = text.splitlines().index(original) + 1
+                with self.assertRaisesRegex(ValueError, f"строка {line}"):
+                    reports.get_issue(self.root, issue["id"])
+                result = check_vault(self.root)
+                problem, = result["issues"]["items"]
+                self.assertEqual((result["status"], problem["code"], problem["path"], problem["line"]),
+                                 ("issues", "record.structure", issue["path"], line))
+                self.assertNotIn(secret, repr(result))

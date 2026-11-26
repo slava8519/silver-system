@@ -120,6 +120,14 @@ class ProjectUpdatesTests(unittest.TestCase):
         self.assertIn(old, new_body)
         self.assertIn("Подтверждённое событие.", new_body)
 
+    def test_unclosed_fenced_example_remains_at_the_end_when_writing_history(self):
+        tail = "   ~~~~md\n## Коротко\nТекст примера\n~~~\n<!-- brain-project-brief-change: пример -->"
+        self.path.write_text(self.path.read_text() + "\n" + tail)
+        detail = self.save("brief", "Итог по источнику.")
+        self.assertEqual(detail["brief"]["text"], "Итог по источнику.")
+        self.assertTrue(self.path.read_text().endswith(tail))
+        self.assertIn("## История сводки проекта", self.path.read_text().split(tail)[0])
+
     def test_explicit_acceptance_and_no_self_reference(self):
         manual = self.save("brief", "Вариант владельца.", actor="manual", sources=[])
         self.assertTrue(manual["brief"]["manual"])

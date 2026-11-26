@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from examples.project_activity_vault import generate
-from second_brain import cycles, storage
+from second_brain import cycles, okr_web, storage
 from second_brain.__main__ import command_line, run
 from second_brain.okr import KeyResults
 from second_brain.project_activity import ProjectActivity
@@ -157,6 +157,9 @@ class ProjectActivityTests(unittest.TestCase):
         projects = {p["id"]: p for p in catalog["projects"]}
         self.assertEqual((projects[before]["taskCount"], len(projects[before]["plans"])), (0, 1))
         self.assertEqual((projects[after]["taskCount"], projects[after]["end"], projects[after]["plans"]), (1, "2027-02-07", []))
+        legacy, = okr_web.periods(self.root)["items"]
+        self.assertEqual((legacy["id"], legacy["hierarchyRecorded"], legacy["objectives"], legacy["results"]),
+                         (period, False, plan["objectiveCount"], plan["resultCount"]))
         self.assertEqual(snapshot, path.read_bytes())
 
 

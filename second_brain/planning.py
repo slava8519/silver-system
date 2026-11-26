@@ -181,7 +181,8 @@ class Planning:
             path, _, plan, _ = self._find("plan", plan_id)
             return self._view(path, plan)
 
-    def _view(self, path, plan, *, validate_dates=False, linked_task_ids=None):
+    def _view(self, path, plan, *, validate_dates=False, linked_task_ids=None,
+              tasks_by_id=None, project_directions=None):
         from .plan_tree import check_parents, parent_links
         closed = closed_metadata(plan)
         result = self._plan_summary(path, plan, closed)
@@ -197,10 +198,15 @@ class Planning:
         ids = list(dict.fromkeys([*ids, *linked_task_ids]))
         if not ids:
             return {**result, "items": []}
-        needed = set(ids)
-        selected = {record["id"]: (p, record, header) for p, _, record, header in self._entries("task")
-                    if record["id"] in needed}
-        directions = self._project_directions(record for _, record, _ in selected.values())
+        if tasks_by_id is None:
+            needed = set(ids)
+            selected = {record["id"]: (p, record, header) for p, _, record, header in self._entries("task")
+                        if record["id"] in needed}
+        else:
+            selected = {key: tasks_by_id[key] for key in ids if key in tasks_by_id}
+        directions = project_directions
+        if directions is None:
+            directions = self._project_directions(record for _, record, _ in selected.values())
         items = []
         for identifier in ids:
             if identifier in selected:

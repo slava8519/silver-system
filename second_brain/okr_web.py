@@ -5,28 +5,13 @@ from .okr import KeyResults
 
 
 def periods(root):
-    from .cycles import closed_metadata, frozen_rows
-    service = KeyResults(root)
-    with storage._vault_lock(root, write=False):
-        plans = {}
-        for path, _, record, _ in service.planning._entries("plan"):
-            closed = closed_metadata(record)
-            plan = service.planning._plan_summary(path, record, closed)
-            goals = []
-            if closed:
-                frozen_rows(record, closed)
-                goals = (closed.get("okr") or {}).get("objectives", [])
-            plans[record["id"]] = {**plan, "objectives": len(goals), "results": sum(len(g["results"]) for g in goals),
-                                   "hierarchyRecorded": not closed or "okr" in closed}
-        live = {p["id"] for p in plans.values() if p["status"] == "active"}
-        owners = {}
-        for goal in service._objectives(live):
-            plans[goal["planId"]]["objectives"] += 1
-            owners[goal["id"]] = goal["planId"]
-        if owners:
-            for _, _, result, _ in service._entries(owners):
-                plans[owners[result["objective_id"]]]["results"] += 1
-    return {"name": root.name, "items": list(plans.values())}
+    """Older HTTP clients use the same plan counts under the original field names."""
+    from .project_activity import ProjectActivity
+    catalog = ProjectActivity(root).catalog()
+    fields = ("id", "type", "title", "path", "revision", "status", "closedAt", "hierarchyRecorded")
+    rows = [{**{k: plan[k] for k in fields}, "objectives": plan["objectiveCount"], "results": plan["resultCount"]}
+            for plan in catalog["plans"]]
+    return {"name": catalog["name"], "items": rows}
 
 
 def _fields(data, required, optional=()):

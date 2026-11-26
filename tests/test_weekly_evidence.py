@@ -21,7 +21,8 @@ class WeeklyEvidenceTests(unittest.TestCase):
         self.plan = self.planning.create_plan('Цикл')
         self.task = self.planning.create_task('Проверить', due='2026-11-25')
         self.planning.add_task(self.plan['id'], self.task['id'])
-        self.note = storage.create(self.root, 'note', 'Свидетельство', body='Проверка назначена.\nПроверка перенесена.')
+        self.note = storage.create(self.root, 'note', 'Свидетельство',
+                                   body='Проверка назначена. 2026-11-20\nПроверка перенесена. 2026-11-20')
         self.line = storage.read_record(self.note)['body_start']
 
     def event(self, stamp, offset=0, entry_id=None, event_date='2026-11-20'):
@@ -29,7 +30,7 @@ class WeeklyEvidenceTests(unittest.TestCase):
         data = {'id': self.task['id'], 'field': 'latest', 'date': event_date, 'actor': 'ai',
                 'revision': gantt.detail(self.task['id'])['revision'],
                 'sources': [{'path': 'Notes/Свидетельство.md', 'line': self.line + offset}],
-                'text': self.note.read_text().splitlines()[self.line + offset - 1]}
+                'text': self.note.read_text().splitlines()[self.line + offset - 1].rsplit(' ', 1)[0]}
         with patch('second_brain.gantt.datetime') as clock:
             clock.now.return_value = datetime.fromisoformat(stamp)
             return gantt.edit({**data, 'entryId': entry_id})['latest']
@@ -81,10 +82,13 @@ class WeeklyEvidenceTests(unittest.TestCase):
     def test_period_cutoff_and_snapshot_do_not_infer_completion(self):
         with self.assertRaisesRegex(ValueError, 'закрытый'):
             self.review()
+        self.note.write_text(self.note.read_text().replace('назначена. 2026-11-20', 'назначена. 2026-11-15')
+                             .replace('перенесена. 2026-11-20', 'перенесена. 2026-11-22')
+                             + '\nНовый срок подтверждён. 2026-11-19')
         self.event('2026-11-21T20:00:00+00:00', event_date='2026-11-15')
         self.event('2026-11-22T12:30:00+00:00', offset=1, event_date='2026-11-22')
         self.close()
-        self.event('2026-11-22T22:30:00.700000+00:00', event_date='2026-11-19')
+        self.event('2026-11-22T22:30:00.700000+00:00', offset=2, event_date='2026-11-19')
         result = self.review(start='2026-11-16', end='2026-11-22')
         self.assertEqual([e['date'] for e in result['facts'] if e['kind'] == 'event'], ['2026-11-22'])
         self.assertIsNone(result['facts'][0]['dates']['completed'])
@@ -104,7 +108,7 @@ class WeeklyEvidenceTests(unittest.TestCase):
     def test_completion_uses_actual_date_not_date_author_wrote_the_record(self):
         schedule = Schedule(self.root)
         options = {'actor': 'ai', 'sources': [{'path': 'Notes/Свидетельство.md', 'line': self.line}]}
-        self.note.write_text(self.note.read_text().replace('Проверка назначена.', 'Работа завершена 4 марта.'))
+        self.note.write_text(self.note.read_text().replace('Проверка назначена. 2026-11-20', 'Работа завершена 4 марта.'))
         proposal = schedule.preview(self.task['id'], 'completed', '2020-03-04', **options)
         with patch('second_brain.schedule.datetime') as clock:
             clock.now.return_value = datetime.fromisoformat('2020-03-08T12:00:00+00:00')

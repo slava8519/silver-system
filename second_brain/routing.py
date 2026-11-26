@@ -140,14 +140,7 @@ class Routing:
         return row
 
     def rules(self):
-        rows = []
-        seen = set()
-        for _, record in storage.iter_records(self.root):
-            if record["type"] == "direction":
-                if record["id"] in seen:
-                    raise ValueError("Один ID направления найден в нескольких карточках.")
-                seen.add(record["id"])
-                rows.append(self._rule(record))
+        rows = (self._rule(record) for record in storage.direction_headers(self.root))
         return sorted(rows, key=lambda row: (row["title"].casefold(), row["direction"]))
 
     def save_rule(self, data):
@@ -214,7 +207,7 @@ class Routing:
     def apply_project_event_locked(self, action, source):
         """Store only the reviewed public excerpt from the immutable Inbox original."""
         from . import project_updates
-        from .okr import _check_date
+        from .evidence import require_event_date
 
         project_id, line, quote = action["project"], action["line"], action["quote"]
         if action.get("visibility", "shared") != "shared":
@@ -224,12 +217,7 @@ class Routing:
             raise ValueError("Цитата события не совпадает со строкой оригинала.")
         date = action.get("date")
         if date is not None:
-            try:
-                confirmed = _check_date(date, quote)
-            except ValueError:
-                confirmed = {}
-            if not confirmed:
-                raise ValueError("Указанная дата события должна быть подтверждена цитатой из оригинала.")
+            require_event_date(date, [{"quote": quote}])
         path = storage.find_record(self.root, project_id)
         before = path.read_bytes()
         record, header = storage._parse_record(path, before)

@@ -200,7 +200,7 @@ def _work(root, scope, path, record, group, cache):
     lines = record["body"].splitlines(keepends=True)
     for field in ("brief", "latest"):
         try:
-            rows = gantt._entries(lines, field, gantt._window(lines, field))
+            rows = gantt._entries(lines, field, base=record["body_start"])
         except (ValueError, KeyError):
             continue
         for saved, index, _ in rows:

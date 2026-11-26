@@ -1,9 +1,11 @@
+from collections import Counter
 import json
 from pathlib import Path
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from examples.gantt_vault import generate
 from second_brain import project_updates, search, storage
@@ -28,6 +30,30 @@ class RefreshAllTests(unittest.TestCase):
     def markdown(self):
         return {p.relative_to(self.root): (p.read_bytes(), p.stat().st_mtime_ns)
                 for p in self.root.rglob("*.md")}
+
+    def test_shared_tasks_are_read_once_when_refreshing_multiple_open_plans(self):
+        storage.initialize(self.root)
+        planning = Planning(self.root)
+        area = storage.read_record(storage.create(self.root, "direction", "Мастерская"))
+        project = storage.read_record(storage.create(self.root, "project", "Поставка", direction=area["id"]))
+        tasks = [planning.create_task(f"Работа {i}", project=project["id"]) for i in range(20)]
+        for i in range(10):
+            plan = planning.create_plan(f"План {i}")
+            planning.add_task(plan["id"], tasks[i]["id"])
+            planning.add_task(plan["id"], tasks[-1]["id"])
+        reads = Counter()
+        read_bytes = Path.read_bytes
+
+        def counted(path):
+            if path.parent == self.root / "Tasks" and path.suffix == ".md":
+                reads[path] += 1
+            return read_bytes(path)
+
+        with patch.object(Path, "read_bytes", counted):
+            result = refresh_all(self.root)
+        self.assertEqual(result["issues"]["items"], [])
+        self.assertEqual(result["changedCards"], 0)
+        self.assertEqual(reads, Counter({self.root / task["path"]: 1 for task in tasks}))
 
     def test_one_command_updates_three_directions_and_retries_without_writes(self):
         generate(self.root, with_project_updates=True)

@@ -26,6 +26,17 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(note.read_bytes(), b"# My old note\n")
         self.assertEqual(list(storage.iter_records(self.root)), [])
 
+    def test_find_record_skips_unrelated_broken_cards_and_checks_matching_ids(self):
+        area = storage.create(self.root, "direction", "Дом")
+        identifier = storage.read_record(area)["id"]
+        (self.root / "Notes" / "broken.md").write_bytes(b'---\nid: other\ntype: note\ntitle: "open\n---\n')
+        (self.root / "Notes" / "foreign.md").write_text(f"---\nid: {identifier}\ntype: book\n---\n")
+        self.assertEqual(storage.find_record(self.root, identifier), area)
+        duplicate = self.root / "Notes" / "copy.md"
+        duplicate.write_bytes(area.read_bytes().replace(b'type: "direction"', b'type: "note"'))
+        with self.assertRaisesRegex(ValueError, "ID найден в нескольких"):
+            storage.find_record(self.root, identifier)
+
     def test_direction_links_and_ids_survive_renaming(self):
         direction = storage.create(self.root, "direction", "Городская история")
         direction_id = storage.read_record(direction)["id"]

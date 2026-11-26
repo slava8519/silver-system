@@ -8,7 +8,8 @@ import re
 import uuid
 
 from . import storage
-from .evidence import linked_source, verify_sources
+from .evidence import linked_source, require_event_date, verify_sources
+from .markdown_sections import fenced_lines
 from .planning import Planning, TASK_SCALARS, validate_due
 from .schedule import schedule_history
 
@@ -20,7 +21,7 @@ _CHANGE = "<!-- brain-gantt-change: "
 _MAX_LATEST, _MAX_HISTORY = 12, 5
 
 
-def _payload(line, prefix):
+def _payload(line, prefix, number):
     try:
         if not line.endswith(" -->"):
             raise ValueError
@@ -29,7 +30,7 @@ def _payload(line, prefix):
             raise ValueError
         return value
     except ValueError as error:
-        raise storage.ConflictError("Повреждена служебная отметка Ганта в Markdown.") from error
+        raise storage.ConflictError(f"Повреждена служебная отметка Ганта, строка {number}.") from error
 
 
 def _digest(text):
@@ -45,15 +46,15 @@ def _source_keys(sources):
     return {(s["id"], s["ref"], s["quote"]) for s in sources}
 
 
-def _window(lines, field):
+def _window(lines, field, code, base):
     title = "## " + _HEADINGS[field]
-    starts = [n for n, line in enumerate(lines) if line.rstrip() == title]
+    starts = [n for n, line in enumerate(lines) if n not in code and line.rstrip() == title]
     if len(starts) > 1:
-        raise storage.ConflictError(f"В карточке несколько разделов «{_HEADINGS[field]}».")
+        raise storage.ConflictError(f"Повтор раздела «{_HEADINGS[field]}», строка {base + starts[1]}.")
     if not starts:
         return None
     begin = starts[0] + 1
-    end = next((n for n in range(begin, len(lines)) if re.match(r"^#{1,2}\s", lines[n])), len(lines))
+    end = next((n for n in range(begin, len(lines)) if n not in code and re.match(r"^#{1,2}\s", lines[n])), len(lines))
     return begin, end
 
 
@@ -61,29 +62,37 @@ def _empty():
     return {"text": "", "author": None, "manual": False, "updated": None, "sources": []}
 
 
-def _entries(lines, field, bounds):
+def _entries(lines, field, *, code=None, base=1, bounds=None):
     """Read managed text and ordinary owner-written paragraphs under the same heading."""
+    if code is None:
+        code, _ = fenced_lines(lines)
+    if bounds is None:
+        bounds = _window(lines, field, code, base)
     if bounds is None:
         return []
     pos, end = bounds
     entries = []
     freeform_count = 0
     while pos < end:
-        if not lines[pos].strip():
+        if pos in code or not lines[pos].strip():
             pos += 1
             continue
         begin = pos
         line = lines[pos].rstrip("\r\n")
         if line.startswith(_OPEN):
-            meta = _payload(line, _OPEN)
-            refs = next((n for n in range(pos + 1, end) if lines[n].rstrip() == _REFS), end)
-            close = next((n for n in range(refs + 1, end) if lines[n].rstrip() == _END), end)
-            if close == end or any(l.startswith(_OPEN) or l.rstrip() == _END for l in lines[pos+1:refs]):
-                raise storage.ConflictError(f"Проверьте границы текста в разделе «{_HEADINGS[field]}».")
+            meta = _payload(line, _OPEN, base + pos)
+            refs = next((n for n in range(pos + 1, end) if n not in code and lines[n].rstrip() == _REFS), end)
+            close = next((n for n in range(refs + 1, end) if n not in code and lines[n].rstrip() == _END), end)
+            if close == end or any(n not in code and (lines[n].startswith(_OPEN) or
+                                   (n != refs and lines[n].rstrip() in (_REFS, _END))) for n in range(pos + 1, close)):
+                raise storage.ConflictError(f"Проверьте границы текста в разделе «{_HEADINGS[field]}», строка {base + pos}.")
             text = _text(lines[pos + 1:refs])
             footer = _text(lines[refs + 1:close])
             modified = _digest(text + "\0" + footer) != meta.get("digest")
             references_edited = meta.get("footerDigest") is not None and _digest(footer) != meta["footerDigest"]
+            if modified and code:
+                text = _text(lines[n] for n in range(pos + 1, refs) if n not in code)
+                footer = _text(lines[n] for n in range(refs + 1, close) if n not in code)
             try:
                 author = "manual" if modified else meta["author"]
                 if author not in ("manual", "ai"):
@@ -110,14 +119,14 @@ def _entries(lines, field, bounds):
                     if refs:
                         entry["text"] = "\n\n".join(filter(None, (text, refs)))
             except (KeyError, TypeError, ValueError) as error:
-                raise storage.ConflictError("Проверьте служебные поля Ганта в Markdown.") from error
+                raise storage.ConflictError(f"Проверьте служебные поля Ганта, строка {base + pos}.") from error
             pos = close + 1
         else:
-            while pos < end and not lines[pos].startswith(_OPEN):
-                if lines[pos].strip() in (_END, _REFS):
-                    raise storage.ConflictError("Проверьте границы полей Ганта в Markdown.")
+            while pos < end and (pos in code or not lines[pos].startswith(_OPEN)):
+                if pos not in code and lines[pos].strip() in (_END, _REFS):
+                    raise storage.ConflictError(f"Проверьте границы полей Ганта, строка {base + pos}.")
                 pos += 1
-            text = _text(lines[begin:pos])
+            text = _text(lines[n] for n in range(begin, pos) if n not in code)
             entry = {**_empty(), "text": text, "author": "manual", "manual": True}
             if field == "latest":
                 freeform_count += 1
@@ -147,8 +156,11 @@ def _block(entry, root, task_path, newline):
     return newline.join([*lines, _END, ""])
 
 
-def _changes(lines):
-    return [_payload(line.strip(), _CHANGE) for line in lines if line.startswith(_CHANGE)]
+def _changes(lines, code=None, base=1):
+    if code is None:
+        code, _ = fenced_lines(lines)
+    return [_payload(line.strip(), _CHANGE, base + n) for n, line in enumerate(lines)
+            if n not in code and line.startswith(_CHANGE)]
 
 
 def _deleted():
@@ -158,15 +170,17 @@ def _deleted():
 
 def _row_fields(record, *, all_entries=False):
     lines = record["body"].splitlines(keepends=True)
-    changes = _changes(lines)
-    brief = _entries(lines, "brief", _window(lines, "brief"))
+    base = record["body_start"]
+    code, _ = fenced_lines(lines)
+    changes = _changes(lines, code, base)
+    brief = _entries(lines, "brief", code=code, base=base)
     if brief:
         summary = brief[0][0]
     elif any(c.get("field") == "brief" for c in changes):
         summary = _deleted()
     else:
         summary = _empty()
-    latest = [entry for entry, _, _ in _entries(lines, "latest", _window(lines, "latest"))]
+    latest = [entry for entry, _, _ in _entries(lines, "latest", code=code, base=base)]
     latest.sort(key=lambda entry: entry["date"] or "", reverse=True)
     total = len(latest)
     if all_entries:
@@ -184,10 +198,13 @@ def _row_fields(record, *, all_entries=False):
 
 def _write_history(lines, change, newline):
     entry = _CHANGE + storage.comment_json(change) + " -->" + newline
-    last = next((n for n in reversed(range(len(lines))) if lines[n].startswith(_CHANGE)), None)
+    code, append_at = fenced_lines(lines)
+    last = next((n for n in reversed(range(len(lines))) if n not in code and lines[n].startswith(_CHANGE)), None)
     if last is None:
-        lines.append(newline + "## История Ганта" + newline + newline + entry)
+        lines.insert(append_at, newline + "## История Ганта" + newline + newline + entry)
     else:
+        if not lines[last].endswith(("\r", "\n")):
+            entry = newline + entry
         lines.insert(last + 1, entry)
 
 
@@ -267,20 +284,24 @@ class Gantt:
         if (len(text) > 2400 or ("\0" in text or "\r" in text) or re.search(r"^#{1,2}\s|<!--\s*/?brain-", text, re.M)
                 or (not text and (field == "latest" or actor == "ai"))):
             raise ValueError("Введите до 2400 символов без служебных меток или заголовков верхнего уровня.")
-        bounds = _window(lines, field)
-        entries = _entries(lines, field, bounds)
+        text_lines = text.splitlines()
+        if fenced_lines(text_lines)[1] != len(text_lines):
+            raise ValueError("Закройте блок кода в тексте записи.")
+        code, append_at = fenced_lines(lines)
+        bounds = _window(lines, field, code, 1)
+        entries = _entries(lines, field, bounds=bounds, code=code) if bounds else []
         old = None
         previous = _empty()
         if field == "brief":
             if entry_id is not None:
                 raise ValueError("ID события допустим только для поля latest.")
             old = entries[0] if entries else None
-            if not old and any(c.get("field") == "brief" for c in _changes(lines)):
+            if not old and any(c.get("field") == "brief" for c in _changes(lines, code)):
                 previous = _deleted()
         elif entry_id is not None:
             old = next((row for row in entries if row[0]["id"] == entry_id), None)
             if not old:
-                if not any(c.get("field") == "latest" and c.get("entryId") == entry_id for c in _changes(lines)):
+                if not any(c.get("field") == "latest" and c.get("entryId") == entry_id for c in _changes(lines, code)):
                     raise storage.ConflictError("Событие не найдено. Перечитайте карточку.")
                 previous = _deleted()
         if old:
@@ -310,21 +331,29 @@ class Gantt:
         candidates = [previous] if old or entry_id is not None else [e for e, _, _ in entries]
         if any(same_as(candidate) for candidate in candidates):
             return None
+        if actor == "ai" and field == "latest" and entry["date"]:
+            # A text correction accepted by the owner keeps their already recorded event date.
+            if not (accepted and previous.get("date") == entry["date"]):
+                require_event_date(entry["date"], sources)
         if actor == "ai" and field == "latest" and entry_id is None:
             protected = {e["id"] for e, _, _ in entries if e["manual"]}
             live = {e["id"] for e, _, _ in entries}
-            for change in _changes(lines):
+            for change in _changes(lines, code):
                 if (change.get("field") == "latest" and (change["entryId"] in protected or change["entryId"] not in live)
                         and change["after"] == text and change.get("date") == entry.get("date")
                         and _source_keys(change.get("sources", [])) == _source_keys(sources)):
                     raise storage.ConflictError("Владелец исправил или удалил это событие.")
         block = _block(entry, self.root, path, newline)
         if old:
-            lines[old[1]:old[2]] = block.splitlines(keepends=True)
+            # Native examples survive replacement of the surrounding prose. A block submitted
+            # as part of a managed field is itself editable from the field's original revision.
+            protected = [lines[n] for n in range(old[1], old[2]) if n in code] if previous["updated"] is None else []
+            lines[old[1]:old[2]] = [*block.splitlines(keepends=True), *protected]
         elif bounds:
-            lines.insert(bounds[0], newline + block)
+            lines[bounds[0]:bounds[0]] = (newline + block).splitlines(keepends=True)
         else:
-            lines.append(newline + "## " + _HEADINGS[field] + newline + newline + block)
+            section = newline + "## " + _HEADINGS[field] + newline + newline + block
+            lines[append_at:append_at] = section.splitlines(keepends=True)
         change = {"entryId": entry.get("id"), "before": previous["text"], "after": text,
                   "beforeAuthor": previous["author"], "beforeManual": previous["manual"],
                   "beforeSources": previous["sources"], "sources": sources,

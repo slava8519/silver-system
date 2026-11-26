@@ -19,10 +19,10 @@ class GanttTests(unittest.TestCase):
         self.gantt = Gantt(self.root)
         self.task = self.plans.create_task("Подготовить пробу")
         self.path = self.root / self.task["path"]
-        self.note = storage.create(self.root, "note", "Протокол", body="Решили сравнить образцы.\n")
+        self.note = storage.create(self.root, "note", "Протокол", body="Решили сравнить образцы. 20.11.2026\n")
         self.record = storage.read_record(self.note)
         self.source = {"path": self.note.relative_to(self.root).as_posix(), "line": self.record["body_start"],
-                       "quote": "сравнить образцы"}
+                       "quote": "сравнить образцы. 20.11.2026"}
 
     def detail(self):
         return self.gantt.detail(self.task["id"])
@@ -95,7 +95,7 @@ class GanttTests(unittest.TestCase):
         moved.write_text(moved.read_text().replace("Решили сравнить образцы.", "Контроль отменён."))
         with self.assertRaises(storage.ConflictError):
             WorkspaceQuery(self.root).open_citation(ref)
-        self.assertEqual(self.detail()["brief"]["sources"][0]["quote"], "сравнить образцы")
+        self.assertEqual(self.detail()["brief"]["sources"][0]["quote"], self.source["quote"])
 
     def test_stale_revision_and_native_edit_and_deletion_protect_owner(self):
         first = self.edit(text="Вывод ИИ", sources=[self.source])
@@ -227,3 +227,59 @@ class GanttTests(unittest.TestCase):
         with self.assertRaises(storage.ConflictError):
             self.edit(text="Другое.", sources=[self.source])
         self.assertEqual(self.path.read_bytes(), broken)
+
+    def test_fenced_examples_stay_byte_identical_during_row_and_history_edits(self):
+        example = ("````markdown\r\n## Коротко\r\n```\r\n## Последнее\r\n"
+                   "<!-- brain-gantt: not JSON -->\r\n<!-- brain-gantt-change: пример -->\r\n````\r\n").encode()
+        tail = "  ~~~md\r\n## Коротко\r\n<!-- brain-gantt-change: пример без конца -->".encode()
+        original = self.path.read_bytes().replace(b"\n", b"\r\n")
+        self.path.write_bytes(original + example + tail)
+        self.assertEqual((self.detail()["brief"]["text"], self.detail()["historyTotal"]), ("", 0))
+        self.edit(actor="manual", text="Сводка владельца.")
+        result = self.edit("latest", text="Проверили.", sources=[self.source])
+        self.assertEqual((result["brief"]["text"], result["latest"][0]["text"], result["historyTotal"]),
+                         ("Сводка владельца.", "Проверили.", 2))
+        self.assertIn(example, self.path.read_bytes())
+        self.assertTrue(self.path.read_bytes().endswith(tail))
+
+    def test_native_text_on_both_sides_of_fenced_example_can_be_replaced(self):
+        example = "~~~md\n## Пример\n<!-- /brain-gantt -->\n~~~\n"
+        self.path.write_text(self.path.read_text() + "\n## Коротко\nДо.\n" + example + "После.\n")
+        self.assertEqual(self.detail()["brief"]["text"], "До.\nПосле.")
+        self.edit(actor="manual", text="Сводка владельца.")
+        self.assertIn(example, self.path.read_text())
+        self.assertEqual(self.detail()["brief"]["text"], "Сводка владельца.")
+
+    def test_example_inserted_into_managed_text_survives_native_and_editor_changes(self):
+        self.edit(text="Сверка.", sources=[self.source])
+        example = "```md\n## Последнее\n<!-- brain-gantt-references -->\n<!-- /brain-gantt -->\n```\n"
+        self.path.write_text(self.path.read_text().replace("\nСверка.\n", "\nСверка.\n" + example).rstrip("\n"))
+        self.assertTrue(self.detail()["brief"]["manual"])
+        result = self.edit(actor="manual", text="Уточнено.")
+        self.assertIn(example, self.path.read_text())
+        self.assertEqual(result["brief"]["text"], "Уточнено.")
+        self.assertEqual(result["historyTotal"], 2)
+        original = self.path.read_bytes()
+        with self.assertRaisesRegex(ValueError, "Закройте"):
+            self.edit(actor="manual", text="```md\nПример")
+        self.assertEqual(self.path.read_bytes(), original)
+
+    def test_ai_date_requires_dated_quote_and_preserves_explicit_owner_date(self):
+        undated = {**self.source, "quote": "сравнить образцы"}
+        before = self.path.read_bytes()
+        for source, day in ((undated, "2026-11-20"), (self.source, "2026-11-21")):
+            with self.subTest(source=source, day=day), self.assertRaisesRegex(ValueError, "Дата события"):
+                self.edit("latest", text="Событие", date=day, sources=[source])
+        self.assertEqual(self.path.read_bytes(), before)
+        no_date = self.edit("latest", text="Событие", sources=[undated])
+        self.assertIsNone(no_date["latest"][0]["date"])
+        dated = self.edit("latest", text="Датированное событие", date="2026-11-20", sources=[undated, self.source])
+        self.assertEqual(dated["latest"][0]["date"], "2026-11-20")
+        manual = self.edit("latest", "manual", text="Самостоятельная сверка.", date="2026-11-25")
+        event = manual["latest"][0]
+        correction = {"id": self.task["id"], "revision": manual["revision"], "actor": "ai", "field": "latest",
+                      "entryId": event["id"], "text": "Согласованная формулировка.", "sources": [undated]}
+        with self.assertRaisesRegex(ValueError, "Дата события"):
+            self.gantt.edit({**correction, "date": "2026-11-26"}, accepted_manual_revision=manual["revision"])
+        edited = self.gantt.edit(correction, accepted_manual_revision=manual["revision"])
+        self.assertEqual(edited["latest"][0]["date"], "2026-11-25")

@@ -6,6 +6,25 @@ import re
 from . import query, storage
 
 
+_MONTHS = ("января", "февраля", "марта", "апреля", "мая", "июня",
+           "июля", "августа", "сентября", "октября", "ноября", "декабря")
+_DATE_PATTERNS = (
+    re.compile(r"(?<!\d)(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})(?!\d)"),
+    re.compile(r"(?<!\d)(?P<day>\d{1,2})\.(?P<month>\d{1,2})\.(?P<year>\d{4})(?!\d)"),
+    re.compile(r"(?<!\d)(?P<day>\d{1,2})\s+(?P<month>" + "|".join(_MONTHS) + r")\s+(?P<year>\d{4})(?!\d)", re.I),
+)
+
+
+def date_spans(line):
+    dates = {}
+    for pattern in _DATE_PATTERNS:
+        for match in pattern.finditer(line):
+            month = match["month"].lower()
+            number = _MONTHS.index(month) + 1 if month in _MONTHS else int(month)
+            dates[match.span()] = f'{match["year"]}-{number:02}-{int(match["day"]):02}'
+    return dates
+
+
 def _source_shape(relative):
     if not isinstance(relative, str) or not relative or "\\" in relative or any(ord(c) < 32 for c in relative):
         raise ValueError("Укажите путь к заметке или проекту внутри хранилища.")
@@ -62,6 +81,19 @@ def verify_sources(root, provided):
         if source not in sources:
             sources.append(source)
     return sources
+
+
+def dated_quote(date, sources):
+    """Find a supplied quotation that states the complete event date."""
+    for source in sources:
+        if date in date_spans(source["quote"]).values():
+            return source["quote"]
+    return None
+
+
+def require_event_date(date, sources):
+    if dated_quote(date, sources) is None:
+        raise ValueError("Дата события должна быть подтверждена цитатой источника.")
 
 
 def resolve_source(root, reference):

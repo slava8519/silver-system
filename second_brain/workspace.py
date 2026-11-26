@@ -32,6 +32,12 @@ class Workspace:
         }
         return result
 
+    def context(self, *, directions=False):
+        context = {"name": self.root.name}
+        if directions:
+            context["directions"] = [{"id": r["id"], "title": r["title"]} for r in storage.direction_headers(self.root)]
+        return context
+
     def overview(self):
         records = []
         ids = set()

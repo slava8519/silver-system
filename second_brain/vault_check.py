@@ -1,10 +1,11 @@
 """Read-only integrity checks for a vault or one committed Inbox source."""
 
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 
-from . import brief, inbox, storage
+from . import brief, check_snapshots, inbox, storage
 from .check_records import check_records
 from .check_sources import check_quotes, check_sources
 from .routing import Routing, _rule_parts
@@ -87,15 +88,8 @@ class Findings:
                 self.add("intake_rule_invalid", path, 1, "Проверьте поля, разрешения и текст правила разбора Inbox.")
         return count
 
-    def page(self, limit, offset):
-        self.items.sort(key=lambda item: (item["path"], item["line"], item["code"], item["message"]))
-        return brief.page(self.items, limit, offset)
 
-
-def _check(root, source_id, limit, offset):
-    if type(limit) is not int or not 1 <= limit <= 20 or type(offset) is not int or offset < 0:
-        raise ValueError("Укажите размер страницы от 1 до 20 и неотрицательное смещение.")
-    root = Path(root).expanduser().resolve()
+def _scan(root, source_id):
     report = Findings(root)
     checked = dict(cards=0, originals=0, receipts=0)
     if source_id is None:
@@ -121,16 +115,30 @@ def _check(root, source_id, limit, offset):
     except (ValueError, OSError):
         report.unreadable("check_interrupted", root, 0, "Не удалось завершить чтение хранилища.")
     status = "incomplete" if report.incomplete else "issues" if report.items else "ok"
-    return {"status": status, "scope": "source" if source_id is not None else "vault",
-            "checked": checked, "issues": report.page(limit, offset)}
+    report.items.sort(key=lambda item: (item["path"], item["line"], item["code"], item["message"]))
+    return {"status": status, "scope": "source" if source_id is not None else "vault", "checked": checked}, report.items
 
 
-def check_vault(root, *, limit=brief.DEFAULT_LIMIT, offset=0):
-    return _check(root, None, limit, offset)
+def check_vault(root, *, limit=brief.DEFAULT_LIMIT, offset=0, snapshot=None):
+    if type(limit) is not int or not 1 <= limit <= 20 or type(offset) is not int or offset < 0:
+        raise ValueError("Укажите размер страницы от 1 до 20 и неотрицательное смещение.")
+    root = Path(root).expanduser().resolve()
+    if snapshot is not None and snapshot != "new":
+        return check_snapshots.read(root, snapshot, limit, offset)
+    summary, issues = _scan(root, None)
+    if snapshot == "new":
+        summary["checkedAt"] = datetime.now(timezone.utc).isoformat()
+        try:
+            summary = check_snapshots.save(root, summary, issues)
+        except (OSError, ValueError):
+            summary.update(snapshot=None, snapshotWarning="Не удалось сохранить проверку в локальном кеше. "
+                           "Открытие следующей страницы потребует нового прохода.")
+    return {**summary, "issues": brief.page(issues, limit, offset)}
 
 
 def check_after_intake(root, source_id):
     """Check the archived version returned by a successful write or replay."""
     if not isinstance(source_id, str) or not re.fullmatch("[0-9a-f]{64}", source_id):
         raise ValueError("Для проверки разбора нужен ID сохранённого оригинала.")
-    return _check(root, source_id, 1, 0)
+    summary, issues = _scan(Path(root).expanduser().resolve(), source_id)
+    return {**summary, "issues": brief.page(issues, 1)}

@@ -37,16 +37,7 @@ def _issue_catalog(root, plan_id=None):
     issues = []
     claimed = defaultdict(set)
     for path in storage.iter_markdown_paths(root, folders=("Reports",)):
-        with path.open("rb") as stream:
-            first = stream.readline()
-            if first.rstrip(b"\r\n") != b"---":
-                continue
-            header = [first]
-            for line in stream:
-                header.append(line)
-                if line.rstrip(b"\r\n") in (b"---", b"..."):
-                    break
-        raw = b"".join(header)
+        raw = storage.read_header(path)
         # The same report ID stays reserved when its owner renames the note or
         # edits another YAML field into a value the report reader cannot parse.
         for identity in re.findall(rb'''(?m)^id:[ \t]*["']?([a-f0-9-]{36})["']?[ \t]*(?:#.*)?\r?$''', raw):

@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import storage
 from .evidence import resolve_source
-from .gantt import _changes, _entries, _source_keys, _window
+from .gantt import _changes, _entries, _source_keys
 from .plan_transaction import previous_versions
 from .planning import Planning, TASK_SCALARS, validate_due
 from .schedule import schedule_history
@@ -78,7 +78,7 @@ def _recorded(updated, cutoff, unchanged=False):
 
 def _as_of_events(record, cutoff, unchanged, start, end, title, warnings):
     lines = record["body"].splitlines(keepends=True)
-    live = {e["id"]: e for e, _, _ in _entries(lines, "latest", _window(lines, "latest"))}
+    live = {e["id"]: e for e, _, _ in _entries(lines, "latest", base=record["body_start"])}
     histories = {}
     for change in _changes(lines):
         if change.get("field") == "latest" and change.get("entryId"):

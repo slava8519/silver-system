@@ -1,7 +1,11 @@
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 import hashlib
 from http.client import HTTPConnection
 import json
+import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -9,8 +13,9 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from second_brain import storage
+from second_brain import inbox, storage
 from second_brain.batch import Batch
+from second_brain.vault_check import check_vault
 from second_brain.webserver import server
 
 
@@ -49,6 +54,69 @@ class VaultCheckInterfaces(unittest.TestCase):
     def incoming(self, text):
         (self.root / "Inbox" / "Источник.txt").write_text(text, encoding="utf-8")
         return {"path": "Inbox/Источник.txt", "revision": hashlib.sha256(text.encode()).hexdigest()}
+
+    def test_snapshot_remains_pageable_across_cli_process_and_http_after_a_repair(self):
+        cache = str(self.root.parent / "cache")
+        with patch.dict(os.environ, {"XDG_CACHE_HOME": cache, "LOCALAPPDATA": cache}):
+            path = storage.create(self.root, "direction", "Проверка")
+            copy = path.with_name("Копия.md")
+            copy.write_bytes(path.read_bytes())
+            content = b"private original, not in diagnostic cache"
+            identifier = hashlib.sha256(content).hexdigest()
+            (self.root / "Sources/Originals" / (identifier + ".txt")).write_bytes(content)
+            with patch.object(inbox, "_file_digest", wraps=inbox._file_digest) as digest:
+                first = self.request("/api/check?snapshot=new&limit=1")
+                digest.assert_called_once()
+                copy.unlink()
+                token = first["snapshot"]
+                self.assertTrue(datetime.fromisoformat(first["checkedAt"]).tzinfo)
+                second = self.cli("check", "--snapshot", token, "--limit", "1", "--offset", "1", status=1)
+                self.assertEqual(second, self.request(f"/api/check?snapshot={token}&limit=1&offset=1"))
+                self.assertEqual((second["snapshot"], second["checkedAt"], second["issues"]["total"]),
+                                 (token, first["checkedAt"], 2))
+                self.assertNotEqual(first["issues"]["items"], second["issues"]["items"])
+                fresh = self.request("/api/check?snapshot=new")
+                self.assertEqual(fresh["status"], "ok")
+                self.assertNotEqual(fresh["snapshot"], token)
+                self.assertEqual(digest.call_count, 2)
+                self.assertEqual(first, self.request(f"/api/check?snapshot={token}&limit=1"))
+                self.assertEqual(digest.call_count, 2)
+            for file in Path(cache).rglob("*"):
+                if file.is_file():
+                    self.assertNotIn(content, file.read_bytes())
+                    if os.name != "nt":
+                        self.assertEqual(file.stat().st_mode & 0o077, 0)
+
+    def test_snapshot_retention_vault_identity_and_concurrent_runs(self):
+        cache = str(self.root.parent / "cache")
+        other = storage.initialize(self.root.parent / "Other")
+        with patch.dict(os.environ, {"XDG_CACHE_HOME": cache, "LOCALAPPDATA": cache}):
+            oldest = self.cli("check", "--snapshot", "new")["snapshot"]
+            with self.assertRaisesRegex(ValueError, "недоступна"):
+                check_vault(other, snapshot=oldest)
+            other_result = check_vault(other, snapshot="new")
+            with ThreadPoolExecutor(4) as executor:
+                runs = list(executor.map(lambda _: check_vault(self.root, snapshot="new"), range(8)))
+            self.assertEqual(len({run["snapshot"] for run in runs}), 8)
+            for run in runs:
+                self.assertEqual(check_vault(self.root, snapshot=run["snapshot"]), run)
+            self.request("/api/check?snapshot=" + oldest, status=400)
+            self.request("/api/check?snapshot=..", status=400)
+            self.assertEqual(check_vault(other, snapshot=other_result["snapshot"]), other_result)
+
+    def test_unwritable_or_in_vault_cache_still_returns_the_completed_check(self):
+        path = storage.create(self.root, "direction", "Дача")
+        path.with_name("Копия.md").write_bytes(path.read_bytes())
+        expected = self.cli("check", "--limit", "1", status=1)
+        for cache in (self.root, self.root.parent / "cache"):
+            with self.subTest(cache=cache), patch.dict(os.environ, {"XDG_CACHE_HOME": str(cache), "LOCALAPPDATA": str(cache)}):
+                with patch("second_brain.check_snapshots.sqlite3.connect", side_effect=sqlite3.OperationalError()):
+                    result = self.request("/api/check?snapshot=new&limit=1")
+                self.assertEqual({key: result[key] for key in expected}, expected)
+                self.assertIsNone(result["snapshot"])
+                self.assertTrue(result["snapshotWarning"])
+                self.assertTrue(datetime.fromisoformat(result["checkedAt"]).tzinfo)
+        self.assertFalse((self.root / "second-brain").exists())
 
     def test_full_check_cli_http_and_paging_survive_broken_catalog(self):
         self.assertEqual(self.cli("check"), self.request("/api/check"))

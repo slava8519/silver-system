@@ -4,7 +4,10 @@ from pathlib import PurePosixPath, PureWindowsPath
 import re
 
 from . import storage
-from .query import _line_ref
+from .query import _line_ref, _state_sources
+
+
+_PROJECT_FIELD_PREFIXES = tuple(key + ":" for key in storage.STATE_FIELDS)
 
 
 def _relative(value):
@@ -36,6 +39,24 @@ def _read(root, relative):
     return path.read_text(encoding="utf-8-sig").splitlines()
 
 
+def _project_field_refs(root, relative, lines):
+    """Use the same public field lines and fingerprints as a project-state citation."""
+    if not lines or lines[0] != "---":
+        return None
+    end = next((n for n in range(1, len(lines)) if lines[n] in ("---", "...")), None)
+    if end is None:
+        return None
+    header = "\n".join(lines[:end + 1]) + "\n"
+    path = root / relative
+    try:
+        record, _ = storage._parse_record(path, header.encode(), kinds=("project",))
+    except ValueError:
+        # Free-form, unmanaged Markdown is a supported report source.
+        return None
+    record["raw"] = header
+    return {source["start"]: source["ref"] for _, source in _state_sources(root, path, record)}
+
+
 def validate_saved(item):
     if not isinstance(item, dict):
         raise ValueError("Повреждён раздел оснований выпуска.")
@@ -44,7 +65,8 @@ def validate_saved(item):
             or not isinstance(item.get("ref"), str) or not re.fullmatch("[0-9a-f]{64}", item["ref"])
             or not isinstance(item.get("quote"), str) or not 0 < len(item["quote"]) <= 600
             or "claim" in item and not isinstance(item["claim"], str)
-            or "id" in item and not isinstance(item["id"], str)):
+            or "id" in item and not isinstance(item["id"], str)
+            or "scope" in item and item["scope"] not in ("field", "text")):
         raise ValueError("Проверьте ссылку и цитату в разделе оснований выпуска.")
 
 
@@ -69,16 +91,21 @@ def verify(root, provided):
         quote = item.get("quote", text.strip())
         if not isinstance(quote, str) or not quote.strip() or len(quote) > 600 or quote not in text:
             raise ValueError(f"Нужна точная цитата до 600 символов: {relative}, строка {number}.")
-        identity, ref = _identity(lines), _line_ref(text)
+        identity, line_ref = _identity(lines), _line_ref(text)
         if item.get("id", identity) != identity:
             raise storage.ConflictError("Карточка источника изменилась. Перечитайте основание.")
-        if item.get("ref", ref) != ref:
-            # Existing search citations for project state use a field-specific fingerprint.
-            key = text.partition(":")[0]
-            if (not relative.startswith("Projects/") or key not in storage.STATE_FIELDS
-                    or item["ref"] != _line_ref(f"project-field\0{key}\0{text}")):
-                raise storage.ConflictError("Строка источника изменилась. Перечитайте основание.")
+        field_ref = scope = None
+        if text.startswith(_PROJECT_FIELD_PREFIXES):
+            fields = _project_field_refs(root, relative, lines)
+            if fields is not None:
+                field_ref = fields.get(number)
+            scope = "field" if field_ref else "text"
+        ref = field_ref or line_ref
+        if item.get("ref", ref) not in (ref, line_ref) or item.get("scope", scope) != scope:
+            raise storage.ConflictError("Строка источника изменилась. Перечитайте основание.")
         source = {"path": relative, "line": number, "quote": quote, "ref": ref}
+        if scope:
+            source["scope"] = scope
         if identity:
             source["id"] = identity
         claim = item.get("claim", "")
@@ -125,9 +152,26 @@ def resolve(root, saved, href, *, context=False):
         result["lines"] = []
     try:
         path, lines = _locate(root, saved)
+        scope = saved.get("scope")
+        fields = _project_field_refs(root, path, lines)
+        legacy_project = scope is None and saved.get("id") and saved["path"].startswith("Projects/")
+
+        def matches_line(n):
+            text = lines[n - 1]
+            if scope == "field":
+                return fields is not None and fields.get(n) == saved["ref"]
+            if text.startswith(_PROJECT_FIELD_PREFIXES) and (fields is not None or legacy_project):
+                # Old issues stored a plain hash for fields and prose alike. A line
+                # resembling project state can only confirm such a field in its header.
+                if scope == "text" and n in fields:
+                    return False
+                if scope is None and (fields is None or n not in fields):
+                    return False
+            return _line_ref(text) == saved["ref"]
+
         number = saved["line"]
-        if not 1 <= number <= len(lines) or _line_ref(lines[number - 1]) != saved["ref"]:
-            matches = [n for n, text in enumerate(lines, 1) if _line_ref(text) == saved["ref"]]
+        if not 1 <= number <= len(lines) or not matches_line(number):
+            matches = [n for n in range(1, len(lines) + 1) if matches_line(n)]
             if len(matches) != 1:
                 return result
             number = matches[0]

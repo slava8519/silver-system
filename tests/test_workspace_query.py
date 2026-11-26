@@ -65,6 +65,15 @@ class WorkspaceQueryTests(unittest.TestCase):
         self.assertEqual(self.reader.ask(prompt)["items"][0]["id"], loose["id"])
         self.assertEqual(self.reader.ask({**prompt, "directionIds": [self.garden["id"]]})["items"], [])
 
+    def test_scent_question_requires_evidence_from_the_named_note(self):
+        self.create("note", "Клавир", "В партитуре четыре ноты.", direction=self.studio["id"])
+        self.create("note", "Договор", "Нотариус подтвердил подпись.")
+        self.assertEqual(self.reader.ask({"query": "Какой аромат?"})["items"], [])
+        self.assertEqual(self.reader.ask({"query": "Какой аромат у клавира?"})["items"], [])
+        sample = self.create("note", "Проба", "После высыхания остаётся аромат кедра.")
+        item, = self.reader.ask({"query": "Какой аромат?"})["items"]
+        self.assertEqual((item["id"], item["answer"]), (sample["id"], sample["body"]))
+
     def test_tentative_text_is_not_substituted_for_a_decision(self):
         draft = self.create("project", "Водосбор", "Цель — собрать воду.\nВариант с двумя бочками.\n"
                             "Решение пока не принято.\nКакое решение нужно?", aliases=["Каскад"])

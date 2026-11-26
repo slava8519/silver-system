@@ -10,6 +10,7 @@ from urllib.parse import quote
 import uuid
 
 from . import brief, report_sources, storage
+from .markdown_sections import fenced_lines
 from .report_defaults import BUILTIN_TEMPLATES
 from .weekly_report import _issue_catalog
 
@@ -62,19 +63,6 @@ def _hash(value):
 def _bytes(fields, body):
     header = "".join(f"{k}: {json.dumps(v, ensure_ascii=False)}\n" for k, v in fields.items() if v is not None)
     return ("---\n" + header + "---\n" + body).encode()
-
-
-def _head(path):
-    with path.open("rb") as stream:
-        first = stream.readline()
-        if first.rstrip(b"\r\n") != b"---":
-            return b""
-        header = [first]
-        for line in stream:
-            header.append(line)
-            if line.rstrip(b"\r\n") in (b"---", b"..."):
-                break
-        return b"".join(header)
 
 
 def _page(items, limit, offset):
@@ -147,7 +135,7 @@ def get_template(root, id, version=None):
             else:
                 path = _template_path(root, id, n)
                 if path.is_file():
-                    record, _ = storage._parse_record(path, _head(path), kinds=("report_template",))
+                    record, _ = storage._parse_record(path, storage.read_header(path), kinds=("report_template",))
                     title = record["title"]
                 else:
                     title = BUILTIN_TEMPLATES[id]["title"]
@@ -216,7 +204,7 @@ def _records(root, folder, kind, fields):
     """List compact headers without opening issue prose or mistaking a free-form note for a report."""
     rows = {}
     for path in storage.iter_markdown_paths(root, folders=(folder,)):
-        data = _head(path)
+        data = storage.read_header(path)
         if not re.search(rb"(?m)^type:[ \t]*[\"']?" + kind.encode() + rb"[\"']?[ \t]*(?:#.*)?\r?$", data):
             continue
         rec, _ = storage._parse_record(path, data, kinds=(kind,), optional_scalars=fields)
@@ -339,6 +327,46 @@ def list_issues(root, *, series_id=None, match=None, limit=20, offset=0):
         return _page(items, limit, offset)
 
 
+def issue_content(record):
+    """Parse one issue's editable Markdown and its stored source metadata."""
+    lines = record["body"].splitlines(keepends=True)
+    first = record["body_start"]
+    code, unclosed = fenced_lines(lines)
+    # Releases already in vaults can end the author's text with an open fence.
+    # The writer always follows it with its own template link and source appendix.
+    appendix = next((i for i in range(len(lines) - 3, unclosed, -1)
+                     if lines[i].rstrip("\r\n") == _FOOTER and not lines[i+1].strip()
+                     and lines[i+2].startswith("Шаблон выпуска — [")), len(lines))
+    start = end = None
+    saved = []
+    for index, raw in enumerate(lines):
+        if index in code and not (start is None and index == appendix or start == appendix and end is None):
+            continue
+        line = raw.rstrip("\r\n")
+        if line == _FOOTER:
+            if start is not None:
+                raise ValueError(f"Раздел оснований выпуска открыт повторно, строка {first + index}.")
+            start = index
+        elif line == _END:
+            if start is None or end is not None:
+                raise ValueError(f"Лишняя закрывающая отметка раздела оснований, строка {first + index}.")
+            end = index
+        elif start is not None and end is None and line.startswith(_SOURCE):
+            try:
+                if not line.endswith(" -->"):
+                    raise ValueError
+                source = json.loads(line[len(_SOURCE):-4])
+                report_sources.validate_saved(source)
+            except ValueError as error:
+                raise ValueError(f"Повреждена запись основания выпуска, строка {first + index}.") from error
+            saved.append(source)
+    if start is not None and end is None:
+        raise ValueError(f"В выпуске не закрыт раздел оснований, строка {first + start}.")
+    if start is not None:
+        del lines[start:end + 1]
+    return "".join(lines).strip("\r\n"), saved
+
+
 def _extract_issue(root, id):
     row = _records(root, "Reports", "report_issue", _ISSUE_FIELDS).get(_id(id))
     if row is None:
@@ -350,19 +378,8 @@ def _extract_issue(root, id):
         raise FileNotFoundError("Выпуск не найден.")
     path = storage._inside(root, row["path"])
     record, _ = storage._parse_record(path, path.read_bytes(), kinds=("report_issue",), optional_scalars=_ISSUE_FIELDS)
-    before, marker, footer = record["body"].partition("\n" + _FOOTER + "\n")
-    saved = []
-    if marker:
-        content, closed, after = footer.partition("\n" + _END)
-        if not closed:
-            raise ValueError(f"В выпуске не закрыт раздел оснований: {row['path']}.")
-        for line in content.splitlines():
-            if line.startswith(_SOURCE) and line.endswith(" -->"):
-                source = json.loads(line[len(_SOURCE):-4])
-                report_sources.validate_saved(source)
-                saved.append(source)
-        before += after
-    return {**_issue_summary({**record, "path": row["path"]}), "body": before.strip("\r\n"),
+    body, saved = issue_content(record)
+    return {**_issue_summary({**record, "path": row["path"]}), "body": body,
             "revision": record["revision"], "templateRevision": record.get("template_revision")}, saved
 
 
@@ -413,7 +430,9 @@ def save_issue(root, *, title, body, template_id, template_version, sources=None
     root = Path(root).resolve()
     title = _text(title, "Название", 180, line=True)
     body = _text(body, "Текст выпуска", 120000)
-    if _FOOTER in body or _END in body:
+    body_lines = body.splitlines()
+    code, _ = fenced_lines(body_lines)
+    if any(n not in code and (_FOOTER in line or _END in line) for n, line in enumerate(body_lines)):
         raise ValueError("В текст выпуска попала служебная разметка источников.")
     if not any(line.strip() and not re.match(r"^\s*#{1,6}(?:\s|$)", line) for line in body.splitlines()):
         raise ValueError("Добавьте текст выпуска под заголовками.")

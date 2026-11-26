@@ -33,6 +33,36 @@ class TeamsWebTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_inbox_and_directory_remain_available_with_unrelated_broken_notes(self):
+        direction = storage.create(self.root, "direction", "Дом")
+        identifier = storage.read_record(direction)["id"]
+        # A direction can move between any of the three managed record folders.
+        moved = self.root / "Projects" / "area.md"
+        moved.write_bytes(direction.read_bytes().replace(b"---\n", b"---\n" + b"# metadata\n" * 300, 1))
+        direction.unlink()
+        person = self.request("people/create", {"name": "Ира", "requestId": "person"}, 201)
+        team = self.request("teams/create", {"name": "Семья", "requestId": "team"}, 201)
+        before = self.request("workspace/context?directions=1")
+        self.assertEqual(before, {"name": "Vault", "directions": [{"id": identifier, "title": "Дом"}]})
+
+        notes = self.root / "Notes"
+        header = '---\ntype: note\nschema_version: 1\nid: note-{}\ntitle: Note\n---\n'
+        for n in range(100):
+            (notes / f"{n}.md").write_text(header.format(n) + "x" * 2048)
+        (notes / "duplicate.md").write_text(header.format(5))
+        (notes / "broken.md").write_bytes(b'---\nid: bad\ntype: note\ntitle: "broken\n---\n')
+        self.request("workspace", status=400)
+        self.assertEqual(self.request("workspace/context"), {"name": "Vault"})
+        self.assertEqual(self.request("workspace/context?directions=1"), before)
+        self.assertEqual(self.request("inbox/rules")["items"][0]["direction"], identifier)
+        self.assertEqual(self.request("people")["items"][0]["id"], person["id"])
+        self.assertEqual(self.request("people?direction=" + identifier)["total"], 0)
+        self.assertEqual(self.request("person?id=" + person["id"])["name"], "Ира")
+        self.assertEqual(self.request("team?id=" + team["id"])["name"], "Семья")
+        self.assertIsNone(self.request("people/context")["owner"])
+        self.request("inbox/text", {"text": "Новый материал"}, 201)
+        self.assertEqual(len(self.request("inbox")["items"]), 1)
+
     def test_empty_directory_namesakes_two_teams_and_independent_context(self):
         ctx = self.request("people/context")
         self.assertEqual((ctx["owner"], ctx["team"], self.request("teams")["items"]), (None, None, []))

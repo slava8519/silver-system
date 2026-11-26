@@ -82,6 +82,7 @@ def command_line():
     check.add_argument("--limit", type=brief.result_limit, default=brief.DEFAULT_LIMIT,
                        help="сколько замечаний показать после полного обхода (1–20)")
     check.add_argument("--offset", type=brief.offset, default=0, help="сколько замечаний пропустить в выдаче")
+    check.add_argument("--snapshot", metavar="new|ID", help="сохранить результат или прочитать его страницу по ID")
     refresh = commands.add_parser("refresh-all", help="обновить все сводки и истории по подтверждённым записям")
     refresh.add_argument("--limit", type=brief.result_limit, default=brief.DEFAULT_LIMIT,
                          help="сколько замечаний показать после полного обхода (1–20)")
@@ -159,7 +160,7 @@ def run(args):
         raise FileNotFoundError(f"Хранилище не найдено: {root}")
     if args.command == "check":
         from .vault_check import check_vault
-        return check_vault(root, limit=args.limit, offset=args.offset)
+        return check_vault(root, limit=args.limit, offset=args.offset, snapshot=args.snapshot)
     if getattr(args, "intake", False):
         return intake_cli.run(root, args)
     if getattr(args, "planning", False):

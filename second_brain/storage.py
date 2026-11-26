@@ -228,6 +228,20 @@ def read_record(path: Path, *, include_raw=False) -> dict:
     return record
 
 
+def read_header(path):
+    """Read the complete frontmatter without loading the Markdown body."""
+    with path.open("rb") as stream:
+        first = stream.readline()
+        if first.rstrip(b"\r\n") != b"---":
+            return b""
+        header = [first]
+        for line in stream:
+            header.append(line)
+            if line.rstrip(b"\r\n") in (b"---", b"..."):
+                break
+        return b"".join(header)
+
+
 def iter_markdown_paths(root: Path, *, folders=None):
     root = Path(root).resolve()
     for folder in KINDS.values() if folders is None else folders:
@@ -252,8 +266,45 @@ def iter_records(root: Path):
         yield path, record
 
 
+def _header_has(header, field, value):
+    for line in header.splitlines():
+        if line.startswith(field):
+            try:
+                if _scalar(line[len(field):].decode("utf-8")) == value:
+                    return True
+            except ValueError:
+                continue
+    return False
+
+
+def direction_headers(root):
+    """Read only direction cards, including ones moved within managed record folders."""
+    seen = set()
+    for path in iter_markdown_paths(root):
+        header = read_header(path)
+        if not _header_has(header, b"type:", "direction"):
+            continue
+        try:
+            record, _ = _parse_record(path, header, kinds=("direction",))
+        except UnmanagedMarkdown:
+            continue
+        if record["id"] in seen:
+            raise ValueError("Один ID направления найден в нескольких карточках.")
+        seen.add(record["id"])
+        yield record
+
+
 def find_record(root: Path, record_id: str) -> Path:
-    matches = [path for path, record in iter_records(root) if record["id"] == record_id]
+    matches = []
+    for path in iter_markdown_paths(root):
+        if not _header_has(read_header(path), b"id:", record_id):
+            continue
+        try:
+            record = read_record(path)
+        except UnmanagedMarkdown:
+            continue
+        if record["id"] == record_id:
+            matches.append(path)
     if not matches:
         raise FileNotFoundError(f"Запись не найдена: {record_id}")
     if len(matches) != 1:

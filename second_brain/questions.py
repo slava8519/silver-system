@@ -192,12 +192,8 @@ def _related(term, words):
     if term in words:
         return True
     # A noun and a related verb can have different endings: «вход»/«входить».
-    if any(min(len(term), len(w)) >= 4 and (w.startswith(term) or term.startswith(w))
-           for w in words):
-        return True
-    # Common descriptors for the same sense in observation notes.
-    scent = ("аромат", "запах", "пахн", "нот")
-    return term.startswith(scent) and any(w.startswith(scent) for w in words)
+    return any(min(len(term), len(w)) >= 4 and (w.startswith(term) or term.startswith(w))
+               for w in words)
 
 
 def _best_line(record, details, interval, decisions, goals, named):

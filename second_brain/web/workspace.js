@@ -461,7 +461,7 @@ import { showVaultCheck } from "./vault-check.js";
 
   async function render() {
     const version = ++pageVersion;
-    if (compact && !/^#(?:plans$|plan\/|project-gantt\/|activity(?:-help)?(?:$|\?)|okr(?:$|[/?])|new\/project(?:$|\?))/.test(location.hash)) history.replaceState(null, "", "#plans");
+    if (compact && !/^#(?:plans(?:$|\?)|plan\/|project-gantt\/|activity(?:-help)?(?:$|\?)|okr(?:$|[/?])|new\/project(?:$|\?))/.test(location.hash)) history.replaceState(null, "", "#plans");
     if (location.hash.split("?")[0] === "#ask") history.replaceState(null, "", "#overview");
     const raw = location.hash.slice(1) || "overview";
     const split = raw.indexOf("?");
@@ -478,7 +478,8 @@ import { showVaultCheck } from "./vault-check.js";
         const view = node("div");
         main.replaceChildren(view);
         await showVaultCheck(view, params, {node, link, button, section, api, pageHead, counted,
-          openSource: fullWorkspace ? openObsidianSource : null, rerun: () => go("#check")});
+          openSource: fullWorkspace ? openObsidianSource : null, rerun: () => go("#check"),
+          pin: url => { if (version === pageVersion && location.hash === "#" + raw) history.replaceState(null, "", url); }});
       } else if (page === "reports") {
         const view = node("div", "reports-view");
         main.replaceChildren(view);
@@ -498,6 +499,15 @@ import { showVaultCheck } from "./vault-check.js";
         const view = node("div", "planning-view");
         main.replaceChildren(view);
         await planning(view, recordId && decodeURIComponent(recordId), params.get("task"), page);
+      } else if (["inbox", "people", "person"].includes(page)) {
+        const withDirections = page === "person" || (page === "inbox" && params.has("path"))
+          || (page === "people" && params.has("direction") && !params.has("team"));
+        const context = await api("workspace/context" + (withDirections ? "?directions=1" : ""));
+        if (version !== pageVersion) return;
+        const view = node("div", "intake-view");
+        main.replaceChildren(view);
+        await intake[page](view, {params, id: decodeURIComponent(recordId || ""), vault: context.name,
+          directions: context.directions || []});
       } else {
         const loaded = await api("workspace");
         if (version !== pageVersion) return;
@@ -506,11 +516,6 @@ import { showVaultCheck } from "./vault-check.js";
         directions = data.records.filter(r => r.type === "direction");
         main.replaceChildren();
         if (page === "records") recordsPage(params);
-        else if (["inbox","people","person"].includes(page)) {
-          const view = node("div", "intake-view");
-          main.append(view);
-          await intake[page](view, {params, id: decodeURIComponent(recordId || ""), vault: data.name, directions});
-        }
         else if (page === "edit" && recordId) await editPage(decodeURIComponent(recordId),null,params,version);
         else if (page === "new") await editPage(null,recordId,params,version);
         else await overview();

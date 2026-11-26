@@ -3,21 +3,11 @@
 from datetime import datetime
 
 from . import evidence, storage
+from .cycles import CYCLE_SEAL
 from .gantt import Gantt, _changes, _row_fields, _source_keys
-from .okr import _check_date, _check_quote
+from .okr import KeyResults, _check_quote
 from .okr_progress import _readings
 from .schedule import schedule_history
-
-
-def _dated_quote(sources, day):
-    """Use a date stated in a citation, independently of the time the card was edited."""
-    for source in sources:
-        try:
-            if _check_date(day, source["quote"]):
-                return source["quote"]
-        except ValueError:
-            continue
-    return None
 
 
 def _dated_facts(record, relative):
@@ -28,14 +18,14 @@ def _dated_facts(record, relative):
     facts = []
     for day, reading in effective.items():
         source = reading["source"]
-        if reading["kind"] == "fact" and source and _dated_quote([source], day):
+        if reading["kind"] == "fact" and source and evidence.dated_quote(day, [source]):
             _check_quote(reading["value"], "%", day, source["quote"])
             facts.append((day, source["quote"], [source]))
 
     dates = schedule_history(record, relative)
     last = next((row for row in reversed(dates) if row["field"] == "completed"), None)
     if last and last["after"] and record.get("completed") == last["after"]:
-        quote = _dated_quote(last["sources"], last["after"])
+        quote = evidence.dated_quote(last["after"], last["sources"])
         if quote:
             facts.append((last["after"], quote, last["sources"]))
     # A corrected value or withdrawn completion is still historical evidence.
@@ -167,6 +157,45 @@ def _refresh_task(gantt, record, relative, report, source_cache):
                 report.setdefault("example", {"id": record["id"], "path": relative})
 
 
+def _check_plans(planning, tasks, report):
+    # Validate every plan against one generation, before refreshing any task text.
+    # Even if task discovery failed, closed plans can still validate their own snapshot.
+    try:
+        plans = list(planning._entries("plan"))
+    except (ValueError, OSError) as error:
+        plans = []
+        report["issues"].append({"path": "Plans", "reason": str(error)})
+    live_ids = {record["id"] for _, _, record, _ in plans if CYCLE_SEAL not in record["field_lines"]}
+    linked, directions = None, None
+    if live_ids:
+        try:
+            linked = KeyResults(planning.root).plan_task_ids(live_ids)
+            if tasks is not None:
+                directions = planning._project_directions(row for _, row, _ in tasks.values())
+        except (ValueError, OSError, KeyError, TypeError):
+            # An unrelated broken reference must not prevent other plans from validating.
+            # A missing batch lookup is retried for the specific members of each plan.
+            pass
+    for path, _, record, _ in plans:
+        relative = path.relative_to(planning.root).as_posix()
+        report["plans"] += 1
+        try:
+            members = linked.get(record["id"], ()) if linked is not None else None
+            plan = planning._view(path, record, validate_dates=True, linked_task_ids=members,
+                                  tasks_by_id=tasks, project_directions=directions)
+            if plan["status"] == "closed":
+                report["closedPlans"] += 1
+                continue
+            for item in plan["items"]:
+                if item.get("missing"):
+                    report["issues"].append({"path": relative,
+                                             "reason": f'В плане не найдена задача {item["id"]}.'})
+        except (ValueError, OSError) as error:
+            report["issues"].append({"path": relative, "reason": str(error)})
+        except (KeyError, TypeError):
+            report["issues"].append({"path": relative, "reason": "Проверьте служебные поля плана."})
+
+
 def refresh_planning(root):
     """Read live plans and frozen cycles, updating only the underlying work cards."""
     gantt = Gantt(root)
@@ -174,29 +203,22 @@ def refresh_planning(root):
               "manualSummaries": 0, "plans": 0, "closedPlans": 0, "issues": []}
     source_cache = {}
     with storage._write_lock(gantt.root):
-        for kind, folder in (("task", "Tasks"), ("plan", "Plans")):
+        try:
+            tasks = {row["id"]: (path, row, header)
+                     for path, _, row, header in gantt.planning._entries("task")}
+        except (ValueError, OSError) as error:
+            tasks = None
+            report["issues"].append({"path": "Tasks", "reason": str(error)})
+
+        _check_plans(gantt.planning, tasks, report)
+        for path, record, _ in (tasks or {}).values():
+            relative = path.relative_to(gantt.root).as_posix()
+            report["examined"] += 1
             try:
-                for path, _, record, _ in gantt.planning._entries(kind):
-                    relative = path.relative_to(gantt.root).as_posix()
-                    try:
-                        if kind == "plan":
-                            report["plans"] += 1
-                            plan = gantt.planning._view(path, record, validate_dates=True)
-                            if plan["status"] == "closed":
-                                report["closedPlans"] += 1
-                            else:
-                                for item in plan["items"]:
-                                    if item.get("missing"):
-                                        report["issues"].append({"path": relative,
-                                                                 "reason": f'В плане не найдена задача {item["id"]}.'})
-                        else:
-                            report["examined"] += 1
-                            _refresh_task(gantt, record, relative, report, source_cache)
-                    except (ValueError, OSError) as error:
-                        report["issues"].append({"path": relative, "reason": str(error)})
-                    except (KeyError, TypeError):
-                        report["issues"].append({"path": relative,
-                                                 "reason": "Проверьте сохранённые ссылки и служебные поля истории в Markdown."})
+                _refresh_task(gantt, record, relative, report, source_cache)
             except (ValueError, OSError) as error:
-                report["issues"].append({"path": folder, "reason": str(error)})
+                report["issues"].append({"path": relative, "reason": str(error)})
+            except (KeyError, TypeError):
+                report["issues"].append({"path": relative,
+                                         "reason": "Проверьте сохранённые ссылки и служебные поля истории в Markdown."})
     return report

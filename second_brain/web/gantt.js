@@ -5,6 +5,7 @@ import {closedDay, closedStamp, cyclePreview, snapshotInspector} from "./gantt-c
 
 import {branchDates, treeRows} from "./gantt-tree.js";
 import {okrLink, openOKR} from "./gantt-okr.js";
+import {activityCatalog} from "./project-activity.js";
 import {planProjects} from "./project-participation.js";
 import {projectUpdatesPanel} from "./project-updates.js";
 
@@ -22,6 +23,7 @@ export function planningView(ui) {
   return async function open(view, id, selectedId, page) {
     dispose();
     if (page === "okr" || page === "activity" || (page === "project-gantt" && !id)) return openOKR(ui, view, id, urlFor);
+    if (!id) return activityCatalog(ui, view, "plans");
     const projectView = page === "project-gantt";
     const planId = projectView ? null : id;
     const source = endpoint(projectView ? "plan/project-gantt" : "plan", id);
@@ -29,29 +31,9 @@ export function planningView(ui) {
       + (task ? "?" + new URLSearchParams({task}) : "") : urlFor(planId, task, scope);
     const life = new AbortController();
     dispose = () => life.abort();
-    const [catalog, initial] = await Promise.all([projectView ? null : api("plans"), id ? api(source) : null]);
+    const [catalog, initial] = await Promise.all([projectView ? null : api("plans"), api(source)]);
     if (!view.isConnected) return;
     const {name: vault, root} = catalog || initial;
-    if (!id) {
-      view.append(pageHead(vault, "Планы", okrLink(ui)));
-      const hasClosed = catalog.items.some(p => p.status === "closed");
-      for (const closed of [false, true]) {
-        const entries = catalog.items.filter(p => (p.status === "closed") === closed);
-        if (!entries.length) continue;
-        if (hasClosed) view.append(node("h2", "cycle-catalog-title", closed ? "Закрытые циклы" : "Активные планы"));
-        const list = node("div", "gantt-plan-list");
-        for (const plan of entries) {
-          const a = link("", urlFor(plan.id), "gantt-plan-card");
-          const copy = node("span");
-          copy.append(node("strong", "", plan.title));
-          if (closed) copy.append(node("small", "cycle-card-stamp", closedStamp(plan.closedAt)));
-          a.append(node("span", "gantt-plan-glyph"), copy, node("span", "gantt-arrow", "→")); list.append(a);
-        }
-        view.append(list);
-      }
-      if (!catalog.items.length) view.append(node("p", "gantt-empty", "Пока нет планов. Создать первый можно в разделе «Проектная деятельность»."));
-      return;
-    }
     let plan = initial, selected = selectedId, detail = null, inspector = null;
     const closed = !projectView && plan.status === "closed";
     const today = closed ? closedDay(plan.closedAt) : todayDay();

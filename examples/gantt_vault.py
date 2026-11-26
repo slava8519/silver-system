@@ -134,7 +134,7 @@ def _populate(root):
         task = tasks[title]
         note = storage.create(root, "note", source_title, f"{date}. {fact}", direction=records[direction]["id"])
         line = next(n for n, text in enumerate(note.read_text(encoding="utf-8").splitlines(), 1) if fact in text)
-        refs = [{"path": note.relative_to(root).as_posix(), "line": line, "quote": fact}]
+        refs = [{"path": note.relative_to(root).as_posix(), "line": line, "quote": f"{date}. {fact}"}]
         revision = task["revision"]
         if start:
             revision = gantt.edit({"id": task["id"], "revision": revision, "field": "start",

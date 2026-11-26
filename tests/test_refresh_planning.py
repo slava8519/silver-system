@@ -153,3 +153,20 @@ class RefreshPlanningTests(unittest.TestCase):
         self.assertEqual(report["issues"][0]["path"], plan["path"])
         self.assertIn(task["id"], report["issues"][0]["reason"])
         self.assertEqual((self.root / plan["path"]).read_bytes(), original)
+
+    def test_one_ambiguous_project_keeps_other_plans_diagnostics(self):
+        project = storage.create(self.root, "project", "Отгрузка")
+        identifier = storage.read_record(project)["id"]
+        linked = self.planning.create_task("Передать", project=identifier)
+        missing = self.planning.create_task("Проверить")
+        delivery = self.planning.create_plan("Поставка")
+        checks = self.planning.create_plan("Проверки")
+        self.planning.add_task(delivery["id"], linked["id"])
+        self.planning.add_task(checks["id"], missing["id"])
+        (self.root / missing["path"]).unlink()
+        project.with_name("Копия.md").write_bytes(project.read_bytes())
+
+        result = refresh_planning(self.root)
+        problems = {issue["path"]: issue["reason"] for issue in result["issues"]}
+        self.assertIn(identifier, problems[delivery["path"]])
+        self.assertIn(missing["id"], problems[checks["path"]])

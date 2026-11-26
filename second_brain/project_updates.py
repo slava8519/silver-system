@@ -8,6 +8,7 @@ import re
 
 from . import evidence, storage
 from .inbox import Inbox
+from .markdown_sections import FENCE, fenced_lines
 from .planning import validate_due
 
 
@@ -19,7 +20,6 @@ _SECTION_END = "<!-- /brain-project-section -->"
 _HISTORY = "<!-- brain-project-brief-change: "
 _HISTORY_TITLE = "## История сводки проекта"
 _ORIGINAL = re.compile(r"Sources/Originals/([0-9a-f]{64})\.(?:txt|md)\Z")
-_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)")
 
 
 def _digest(text):
@@ -73,31 +73,24 @@ def _row(text, field, line, end, **fields):
 def _sections(lines):
     """Headings in examples and ambiguous legacy headings are ordinary Markdown."""
     headings = {title: field for field, title in _HEADINGS.items()}
-    sections, code = {}, set()
-    fence = ""
+    sections = {}
+    code, _ = fenced_lines(lines)
     for i, line in enumerate(lines):
-        match = _FENCE.match(line)
-        if fence:
-            code.add(i)
-            if match and match[1].startswith(fence) and not match[2].strip():
-                fence = ""
-        elif match:
-            fence = match[1]
-            code.add(i)
-        elif line in headings:
+        if i not in code and line in headings:
             field = headings[line]
             sections[field] = None if field in sections else i
     return sections, code
 
 
-def _entry(lines, begin, field, base):
+def _entry(lines, begin, field, base, code):
     line = lines[begin]
     meta = json.loads(line[len(_ENTRY):-4])
     refs = lines.index(_LINKS, begin + 1)
     close = lines.index(_END, refs + 1)
     if (not line.endswith(" -->") or meta["author"] not in ("ai", "manual")
             or not isinstance(meta["sources"], list) or len(meta["sources"]) > 8
-            or any(s.startswith((_ENTRY, _END, _SECTION_END, "## ", "# ")) for s in lines[begin+1:close])):
+            or close in code or any(n in code or lines[n].startswith((_ENTRY, _END, _SECTION_END, "## ", "# "))
+                                    for n in range(begin+1, close))):
         raise ValueError
     for source in meta["sources"]:
         if (not isinstance(source, dict) or type(source["line"]) is not int or source["line"] < 1
@@ -156,7 +149,7 @@ def _layout(record, *, strict=False, warnings=None):
         elif field and line.startswith(_ENTRY):
             begin = i
             try:
-                entry, refs, close = _entry(lines, begin, field, base)
+                entry, refs, close = _entry(lines, begin, field, base, code)
             except (IndexError, KeyError, TypeError, ValueError) as error:
                 message = f"Проверьте разметку истории проекта в строке {base+begin}."
                 if strict:
@@ -249,7 +242,7 @@ def read_updates(root, project_id, limit=5, offset=0):
 def _text(value):
     if (not isinstance(value, str) or not value.strip() or len(value) > 2400
             or value.splitlines() != [value] or "\0" in value
-            or value.strip().startswith(("# ", "## ")) or _FENCE.match(value.strip()) or "<!--" in value):
+            or value.strip().startswith(("# ", "## ")) or FENCE.match(value.strip()) or "<!--" in value):
         raise ValueError("Введите одну фразу до 2400 символов без служебной разметки.")
     return value.strip()
 
@@ -268,15 +261,7 @@ def _apply(root, path, record, *, actor, sources, date=None, text=None, summary=
     sources = _sources(root, sources, actor)
     date = validate_due(date)
     if date and actor == "ai":
-        from .okr import _check_date
-        for s in sources:
-            try:
-                if _check_date(date, s["quote"]):
-                    break
-            except ValueError:
-                continue
-        else:
-            raise ValueError("Дата события должна быть подтверждена цитатой источника.")
+        evidence.require_event_date(date, sources)
     sections, entries, hidden = _layout(record, strict=True)
     for source in sources:
         if source["id"] == record["id"] and (source["line"] in hidden or any(
@@ -342,9 +327,6 @@ def _apply(root, path, record, *, actor, sources, date=None, text=None, summary=
         else:
             pos = sections[field] + 1
             lines[pos:pos] = [newline, *block]
-    if lines and not lines[-1].endswith(("\n", "\r")):
-        lines.append(newline)
-    lines.extend(missing)
     if "brief" in changes:
         previous = None if not current else {k: current[k] for k in ("text", "author", "sources", "date")}
         change = {"before": previous, "after": summary, "actor": actor, "updated": stamp}
@@ -352,8 +334,13 @@ def _apply(root, path, record, *, actor, sources, date=None, text=None, summary=
             change.update(acceptedByOwner=True, acceptedManualRevision=record["revision"])
         if not any(s == _HISTORY_TITLE and record["body_start"]+i in hidden
                    for i, s in enumerate(body.splitlines())):
-            lines.extend([newline, _HISTORY_TITLE + newline])
-        lines.append(_HISTORY + storage.comment_json(change) + " -->" + newline)
+            missing.extend([newline, _HISTORY_TITLE + newline])
+        missing.append(_HISTORY + storage.comment_json(change) + " -->" + newline)
+    if missing:
+        _, append_at = fenced_lines(lines)
+        if append_at and not lines[append_at-1].endswith(("\n", "\r")):
+            missing.insert(0, newline)
+        lines[append_at:append_at] = missing
     return "".join(lines), status
 
 

@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -7,6 +8,8 @@ from unittest.mock import patch
 from urllib.parse import unquote
 
 from second_brain import reports, storage
+from second_brain.query import _line_ref, _state_sources
+from second_brain.vault_check import check_vault
 from second_brain.cycles import Cycles
 from second_brain.planning import Planning
 from second_brain.weekly_report import weekly_review
@@ -133,6 +136,71 @@ class Reports(unittest.TestCase):
         self.assertFalse(reports.read_issue_source(self.root, issue["id"], 0)["available"])
         proof.write_text("Контроль\n\nПроверено\n")
         self.assertEqual(reports.read_issue_source(self.root, issue["id"], 0)["line"], 3)
+
+    def test_project_field_citations_follow_the_field_and_never_old_values_in_prose(self):
+        project = storage.create(self.root, "project", "Переезд", status="Готов",
+                                 due="2026-11-30", next_step="Подписать", body="Журнал\n")
+        record = storage.read_record(project, include_raw=True)
+        fields = [{"path": s["path"], "line": s["start"], "quote": s["lines"][0]["text"], "ref": s["ref"]}
+                  for _, s in _state_sources(self.root, project, record)]
+        issue = self.issue(sources=fields)
+        self.assertEqual([s["ref"] for s in issue["sources"]], [s["ref"] for s in fields])
+        old = self.issue(sources=fields, request_id="legacy")
+        old_path = self.root / old["path"]
+        old_lines = old_path.read_text().splitlines()
+        for n, text in enumerate(old_lines):
+            if text.startswith(reports._SOURCE):
+                stored = json.loads(text[len(reports._SOURCE):-4])
+                stored.pop("scope")
+                stored["ref"] = _line_ref(stored["quote"])
+                old_lines[n] = reports._SOURCE + storage.comment_json(stored) + " -->"
+        old_path.write_text("\n".join(old_lines) + "\n")
+        project = project.rename(project.with_name("Переезд базы.md"))
+        raw = project.read_text().replace("---\n", "---\n\n", 1)
+        project.write_text(raw)
+        for edition in (issue, old):
+            shown = reports.get_issue(self.root, edition["id"])["sources"]
+            self.assertTrue(all(s["available"] for s in shown))
+            self.assertEqual([s["line"] for s in shown], [s["line"] + 1 for s in fields])
+        archive = "\n".join(s["quote"] for s in fields)
+        for s in fields:
+            raw = raw.replace(s["quote"], s["quote"].partition(":")[0] + ': "Изменено"')
+        project.write_text(raw + archive + "\n")
+        for edition in (issue, old):
+            for n, source in enumerate(fields):
+                shown = reports.read_issue_source(self.root, edition["id"], n)
+                self.assertEqual((shown["available"], shown["quote"], shown["lines"]), (False, source["quote"], []))
+        # A separately cited history line still works, even with field-like Markdown.
+        historical = {"path": project.relative_to(self.root).as_posix(), "line": len(raw.splitlines()) + 1}
+        prose = self.issue(sources=[historical], request_id="history-line")
+        project.write_text(raw + "\n" + archive + "\n")
+        shown = reports.read_issue_source(self.root, prose["id"], 0)
+        self.assertEqual((shown["available"], shown["line"]), (True, historical["line"] + 1))
+
+        # Legacy evidence did not distinguish a field from matching Markdown prose.
+        # A renamed or damaged type must not let that old citation bind to archived state.
+        for changed_type in ('type: "note"', 'type: "unknown"'):
+            project.write_text((raw + "\n" + archive + "\n").replace('type: "project"', changed_type))
+            for edition in (issue, old):
+                for n in range(len(fields)):
+                    self.assertFalse(reports.read_issue_source(self.root, edition["id"], n)["available"])
+            self.assertTrue(reports.read_issue_source(self.root, prose["id"], 0)["available"])
+
+    def test_fenced_report_markers_are_authored_text_and_only_actual_appendix_is_parsed(self):
+        proof = {"path": "Home.md", "line": 1}
+        sample = "\n".join((reports._FOOTER, "", "Шаблон выпуска — [Демо](v1.md)",
+                            reports._SOURCE + "пример -->", reports._END))
+        for fence in ("````md", "~~~md"):
+            for close in ("", "\n" + fence.rstrip("md")):
+                body = "Формат записи\n\n" + fence + "\n" + sample + close
+                with self.subTest(fence=fence, closed=bool(close)):
+                    saved = self.issue(body=body, sources=[proof], request_id=None)
+                    shown = reports.get_issue(self.root, saved["id"])
+                    self.assertEqual(shown["body"], body)
+                    self.assertEqual([s["path"] for s in shown["sources"]], ["Home.md"])
+                    self.assertEqual(check_vault(self.root)["status"], "ok")
+        with self.assertRaisesRegex(ValueError, "служебная разметка"):
+            self.issue(body="Раздел вне примера\n" + reports._END, request_id=None)
 
     def test_replay_after_manual_issue_edit_title_collision_and_source_loss(self):
         (self.archive / "Ольховая проба.md").write_text("Свободная заметка\n")
