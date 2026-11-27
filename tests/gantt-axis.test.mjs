@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {calendarYear, dayOf, fitWindow, intervalEnd, isoDay, plot, progressText, progressValue, scheduleMarks, scheduleState, ticks, visibleFill} from "../second_brain/web/gantt-axis.js";
+import {calendarYear, dayOf, fitWindow, intervalEnd, isoDay, monthBands, plot, progressText, progressValue, scheduleMarks, scheduleState, tickAlignments, ticks, visibleFill} from "../second_brain/web/gantt-axis.js";
 
 const november = {start: dayOf("2026-11-01"), size: 30};
 test("annual scale follows calendar months when stepping into and out of a leap year", () => {
@@ -11,6 +11,22 @@ test("annual scale follows calendar months when stepping into and out of a leap 
   assert.equal(isoDay(ticks(leap)[2].day), "2028-03-01");
   assert.equal(isoDay(leap.start + leap.size - 1), "2028-12-31");
   assert.equal(calendarYear(leap.start, -1).size, 365);
+});
+test("quarterly headers clip calendar months at the edges and date ticks start on a Monday", () => {
+  const period = {start: dayOf("2027-12-29"), size: 91};
+  const bands = monthBands(period);
+  assert.deepEqual(bands.map(m => isoDay(m.day)), ["2027-12-29", "2028-01-01", "2028-02-01", "2028-03-01"]);
+  assert.deepEqual(bands.map(m => m.width), [3/91, 31/91, 29/91, 28/91]);
+  assert.deepEqual(bands.map(m => m.at), [0, 3/91, 34/91, 63/91]);
+  const weeks = ticks(period);
+  assert.equal(weeks[0].label, "03.01");
+  assert.ok(weeks.every((week, i) => week.at === (5 + 7*i)/91));
+  for (const size of [36, 42, 112, 113, 183]) {
+    assert.ok(ticks({...period, size}).every(tick => new Date(tick.day * 86400000).getUTCDay() === 1));
+  }
+  for (const window of [november, {...period, size: 730}, calendarYear(period.start)]) {
+    assert.deepEqual(monthBands(window), []);
+  }
 });
 test("Milestones are points even when a card contains an old start", () => {
   const row = {kind: "milestone", start: "2026-01-01", due: "2026-11-15", forecast: "2026-11-18"};
@@ -111,4 +127,24 @@ test("Overdue calendar dates, a future slip, and terminal work have different me
   assert.equal(scheduleState({...postponed,status:"Отменено"},review).kind,"cancelled");
   assert.equal(scheduleState({...skipped,status:"closed"},review).kind,"closed");
   assert.equal(scheduleState({...skipped,status:"не завершено"},review).kind,"overdue");
+});
+
+
+test("week labels in December and January stay within their month without touching on narrow scales", () => {
+  const period = {start:dayOf("2026-09-21"), size:115};
+  const weeks = ticks(period), months = monthBands(period), widths = weeks.map(() => 38);
+  for (const width of [730, 470, 316, 160]) {
+    const sides = tickAlignments(weeks, months, width, widths);
+    let previous = -1;
+    for (const [i, tick] of weeks.entries()) {
+      if (sides[i] === "hidden") continue;
+      const start = tick.at * width - (sides[i] === "before" ? widths[i] : 0);
+      const end = start + widths[i];
+      const month = months.filter(m => m.day <= tick.day).at(-1);
+      assert.ok(start > previous && start + .01 >= month.at * width);
+      assert.ok(end <= (month.at + month.width) * width + .01);
+      previous = end;
+    }
+    assert.ok(sides.includes("after"));
+  }
 });

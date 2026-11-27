@@ -44,6 +44,8 @@ class GanttFeedback:
 
     def pending(self, plan_id=None):
         yield from ProjectFeedback(self.planning.root).pending(plan_id)
+        from .gantt_groups import GanttGroups
+        yield from GanttGroups(self.planning.root).pending(plan_id)
         members = None
         if plan_id is not None:
             plan = self.planning.view(plan_id)
@@ -67,6 +69,9 @@ class GanttFeedback:
     def acknowledge(self, task_id, token):
         if isinstance(token, str) and token.startswith("plan-projects:"):
             return ProjectFeedback(self.planning.root).acknowledge(task_id, token)
+        if isinstance(token, str) and token.startswith("gantt-group:"):
+            from .gantt_groups import GanttGroups
+            return GanttGroups(self.planning.root).acknowledge(task_id, token)
         with storage._write_lock(self.planning.root):
             path, before, record, header = self.planning._find("task", task_id)
             current, *_ = _snapshot(record, path.relative_to(self.planning.root).as_posix())

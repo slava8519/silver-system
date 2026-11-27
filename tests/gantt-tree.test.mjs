@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {treeRows, branchDates, kindPrefix} from "../second_brain/web/gantt-tree.js";
+import {treeRows, branchDates, initialFolds, kindPrefix} from "../second_brain/web/gantt-tree.js";
+
+test("the initial OKR overview reveals the linked task in its own branch", () => {
+  const plan = {objectives:[{id:"goal", results:[]}], tree:[
+    {key:"r1", kind:"result"}, {key:"shared", kind:"task", id:"t", parentKey:"r1", contextOnly:true},
+    {key:"r2", kind:"result"}, {key:"parent", kind:"task", id:"p", parentKey:"r2"},
+    {key:"child", kind:"task", id:"t", parentKey:"parent"}, {key:"outside", kind:"outside"}
+  ]};
+  assert.deepEqual([...initialFolds(plan, "", null)], ["r1", "r2", "outside"]);
+  assert.deepEqual([...initialFolds(plan, "", "t")], ["r1", "outside"]);
+  assert.deepEqual([...initialFolds(plan, "r1", null)], []);
+  assert.deepEqual([...initialFolds({...plan, objectives:[]}, "", null)], []);
+});
 
 test("shared work has one bar; its second branch remains visible after filtering or folding", () => {
   const tree = [{key:"g", kind:"objective", id:"g"}];

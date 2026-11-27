@@ -122,10 +122,15 @@ def add_commands(commands):
         parser.add_argument("--task", metavar="ID", help="показать только строку выбранной работы")
     for parser in (show_plan, close, move, history):
         _paging(parser)
-    row = commands.add_parser("gantt-row", help="прочитать сводку задачи и страницу событий с основаниями")
-    row.add_argument("task_id")
+    row = commands.add_parser("gantt-row", help="прочитать сводку и историю выбранной строки Ганта")
+    row.add_argument("row_id")
+    row.add_argument("--plan", metavar="ID", help="план выбранной цели, КР или группы")
+    row.add_argument("--kind", choices=("task", "plan", "objective", "key_result", "group"), default="task")
+    journals = row.add_mutually_exclusive_group()
+    journals.add_argument("--changes", action="store_true", help="показать правки текста сводной строки")
+    journals.add_argument("--work-events", action="store_true", help="показать события вложенных работ с именами и источниками")
     _paging(row)
-    row.add_argument("--manual", action="store_true", help="прочитать только ручные события")
+    journals.add_argument("--manual", action="store_true", help="прочитать только ручные события")
     edit = commands.add_parser("gantt-edit", help="обновить Коротко или Последнее по источникам из JSON на stdin")
     edit.add_argument("--accept-manual", metavar="REV",
                       help="применить согласованный владельцем текст к прочитанной ручной версии")
@@ -191,9 +196,28 @@ def run(root, args):
             data = json.load(sys.stdin)
             if not isinstance(data, dict) or "actor" in data or data.get("field") not in ("brief", "latest"):
                 raise ValueError("Передайте JSON с полем brief или latest. Правки через эту команду отмечаются как ИИ.")
-            saved = gantt.edit({**data, "actor": "ai"}, accepted_manual_revision=args.accept_manual)
+            kind = data.pop("kind", "task")
+            if kind == "task":
+                saved = gantt.edit({**data, "actor": "ai"}, accepted_manual_revision=args.accept_manual)
+            else:
+                from .gantt_groups import GanttGroups
+                saved = GanttGroups(root).edit(data.pop("planId", None), kind, data.get("id"),
+                                               {**data, "actor": "ai"}, accepted_manual_revision=args.accept_manual)
             return {key: saved[key] for key in ("id", "path", "revision", "latestTotal")}
-        row = gantt.detail(args.task_id, all_entries=True)
+        if args.kind != "task":
+            from .gantt_groups import GanttGroups
+            if not args.plan:
+                raise ValueError("Укажите --plan для выбранной сводной строки.")
+            if args.work_events:
+                from .gantt_group_cards import work_events
+                return work_events(root, args.plan, args.kind, args.row_id, limit=args.limit, offset=args.offset)
+            service = GanttGroups(root)
+            if args.changes:
+                return service.history(args.plan, args.kind, args.row_id, limit=args.limit, offset=args.offset)
+            return service.detail(args.plan, args.kind, args.row_id, limit=args.limit, offset=args.offset, manual=args.manual)
+        if args.changes or args.work_events or args.plan:
+            raise ValueError("Для строки плана, цели, КР или группы укажите --kind и --plan.")
+        row = gantt.detail(args.row_id, all_entries=True)
         entries = (e for e in row["latest"] if not args.manual or e["manual"])
         page = brief.page(entries, args.limit, args.offset)
         return {**{key: row[key] for key in ("id", "title", "kind", "revision", "path", "start", "due",

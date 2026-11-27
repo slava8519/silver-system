@@ -3,6 +3,7 @@ import hashlib
 import http.client
 import json
 from pathlib import Path
+from urllib.parse import urlencode
 import subprocess
 import sys
 import tempfile
@@ -319,3 +320,118 @@ class GanttInterfaces(unittest.TestCase):
                 native = next(r for r in feedback.pending() if r["id"] == key)
                 self.assertEqual(native["forecast"], "2026-12-04")
                 self.assertNotEqual(native["token"], change["token"])
+
+    def group_fixture(self):
+        from second_brain.okr import KeyResults
+        service = KeyResults(self.root)
+        area = storage.read_record(storage.create(self.root, "direction", "Учебная сверка"))["id"]
+        plan = self.planning.create_plan("Сверка результатов")["id"]
+        goal = service.create_objective("Провести сверку", plan_id=plan, direction=area)
+        kr = service.create("Обе пробы сверены", objective_id=goal["id"])
+        observation = "2026-11-26. Обе пробы проверены, параметры согласованы."
+        proof = storage.create(self.root, "note", "Протокол сверки", observation)
+        source = {"path": proof.relative_to(self.root.resolve()).as_posix(), "line": storage.read_record(proof)["body_start"],
+                  "quote": observation}
+        return service, plan, goal, kr, source
+
+    def test_summary_row_http_owner_and_cli_approval_have_the_same_revision(self):
+        _, plan, goal, kr, source = self.group_fixture()
+        address = {"kind": "objective", "id": goal["id"], "planId": plan}
+        url = "/api/plan/row?" + urlencode(address)
+        status, initial, _ = self.request(url)
+        self.assertEqual(status, 200)
+        post = {**address, "field": "brief", "revision": initial["revision"], "text": "Ручная формулировка"}
+        self.assertEqual(self.request("/api/plan/row/edit", {**post, "actor": "ai"})[0], 400)
+        status, saved, _ = self.request("/api/plan/row/edit", post)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.request("/api/plan/row/edit", post)[0], 409)
+        args = ("gantt-row", goal["id"], "--plan", plan, "--kind", "objective")
+        manual = self.cli(*args, "--manual")
+        self.assertEqual(manual["revision"], saved["revision"])
+        self.assertEqual(manual["brief"]["text"], "Ручная формулировка")
+        edit = {**post, "text": "Сверка завершена. • Сделано: проверены обе пробы.",
+                "sources": [source], "revision": saved["revision"]}
+        self.assertIn("защищено", self.cli("gantt-edit", data=edit, success=False))
+        self.cli("gantt-edit", "--accept-manual", initial["revision"], data=edit, success=False)
+        self.assertEqual(self.request(url)[1]["revision"], saved["revision"])
+        result = self.cli("gantt-edit", "--accept-manual", saved["revision"], data=edit)
+        reread = self.request(url)[1]
+        self.assertEqual(reread["revision"], result["revision"])
+        summary = reread["brief"]
+        self.assertEqual((summary["text"], summary["author"], summary["manual"], summary["acceptedByOwner"]),
+                         (edit["text"], "ai", True, True))
+        citation, = summary["sources"]
+        self.assertIn(source["quote"], self.request(citation["href"].split("#")[0])[1])
+        change = self.cli(*args, "--changes", "--limit", "1")["items"][0]
+        self.assertEqual((change["before"], change["after"], change["actor"]), (post["text"], edit["text"], "ai"))
+        self.assertEqual(self.cli("gantt-row", kr["id"], "--plan", plan, "--kind", "key_result")["brief"]["text"], "")
+        self.assertEqual(self.request("/api/plan/row?" + urlencode({**address, "planId": self.plan["id"]}))[0], 404)
+
+    def test_cli_group_validation_boundaries_and_event_proof(self):
+        _, plan, _, kr, source = self.group_fixture()
+        identity = {"id": kr["id"], "kind": "key_result", "planId": plan}
+        args = ("gantt-row", kr["id"], "--plan", plan, "--kind", "key_result")
+        original = self.cli(*args)
+        valid = "А" * 160 + " • Сделано: " + "б" * 240 + " • Дальше: " + "в" * 240 + " • Срок: "
+        valid += "г" * (700 - len(valid))
+        edit = {**identity, "revision": original["revision"], "field": "brief", "text": valid, "sources": [source]}
+        for invalid, reason in [
+            ("Итог без раздела", "раздел"), ("А" * 161 + " • Срок: пятница", "160"),
+            ("Итог • Дальше: " + "ж" * 241, "240"), (valid + "д", "700"),
+            ("Итог • Срок: пятница • Сделано: сверка", "порядке"),
+            ("Итог • Дальше: сверить • Дальше: принять", "один раз"),
+            ("Итог • Вероятность: высокая", "раздел"),
+        ]:
+            with self.subTest(reason=reason, sample=invalid[:25]):
+                self.assertIn(reason, self.cli("gantt-edit", data={**edit, "text": invalid}, success=False))
+        for refs in ([], [{**source, "quote": "Отсутствующая цитата"}]):
+            self.cli("gantt-edit", data={**edit, "sources": refs}, success=False)
+        self.assertEqual(self.cli(*args)["revision"], original["revision"])
+        accepted = self.cli("gantt-edit", data=edit)
+        self.assertEqual(self.cli(*args)["brief"]["text"], valid)
+        event = {**edit, "revision": accepted["revision"], "field": "latest", "text": "Записан результат сверки."}
+        for payload in (event, {**event, "date": "2026-11-27"}, {**event, "date": "2026-11-26", "sources": []}):
+            self.cli("gantt-edit", data=payload, success=False)
+        dated = self.cli("gantt-edit", data={**event, "date": "2026-11-26"})
+        self.cli("gantt-edit", data={**event, "revision": dated["revision"], "date": None, "text": "Запись без даты события."})
+        url = "/api/plan/row/events?" + urlencode(identity)
+        first = self.request(url + "&limit=1")[1]
+        second = self.request(url + "&limit=1&offset=1")[1]
+        self.assertEqual(first["latestTotal"], 2)
+        self.assertEqual(first["latest"][0]["date"], "2026-11-26")
+        self.assertIsNone(second["latest"][0]["date"])
+        self.assertEqual(self.cli(*args, "--limit", "1", "--offset", "1")["latest"], second["latest"])
+
+    def test_child_events_are_attributed_scoped_and_separate_in_http_and_cli(self):
+        from second_brain.plan_tree import set_parent
+        service, plan, goal, kr, source = self.group_fixture()
+        tasks = [self.planning.create_task(title) for title in ("Сверить серию", "Проверить пробу", "Вне цели")]
+        parent, child, outside = tasks
+        for task in tasks:
+            state = self.planning.add_task(plan, task["id"])
+        set_parent(self.planning, plan, child["id"], parent["id"], state["revision"])
+        service.link(kr["id"], parent["id"], kr["revision"])
+        for task in tasks:
+            self.cli("gantt-edit", data={"id": task["id"], "revision": task["revision"], "field": "latest",
+                                         "date": "2026-11-26", "sources": [source], "text": task["title"] + " — готово."})
+        task_detail = Gantt(self.root).detail(parent["id"])
+        technical = {"id": parent["id"], "revision": task_detail["revision"], "field": "latest",
+                     "date": "2026-11-26", "text": "влияние пересчитано · обновлена таблица", "sources": [source]}
+        self.cli("gantt-edit", data=technical)
+        self.assertEqual(Gantt(self.root).detail(parent["id"])["latestTotal"], 2)
+        address = {"kind": "objective", "id": goal["id"], "planId": plan}
+        url = "/api/plan/row?" + urlencode(address)
+        before = self.request(url)[1]
+        own = {**address, "revision": before["revision"], "field": "latest", "text": "Решение по цели"}
+        self.assertEqual(self.request("/api/plan/row/edit", own)[0], 200)
+        work = self.request("/api/plan/row/work-events?" + urlencode(address))[1]
+        self.assertEqual(work["total"], 2)
+        self.assertEqual({(item["taskId"], item["taskPath"], item["taskTitle"]) for item in work["items"]},
+                         {(task["id"], task["path"], task["title"]) for task in (parent, child)})
+        for item in work["items"]:
+            self.assertEqual((item["text"], item["sources"][0]["quote"]), (item["taskTitle"] + " — готово.", source["quote"]))
+        subset = self.cli("gantt-row", kr["id"], "--kind", "key_result", "--plan", plan, "--work-events", "--limit", "1", "--offset", "1")
+        self.assertEqual(subset["items"], work["items"][1:])
+        unrelated = self.cli("gantt-row", "outside", "--kind", "group", "--plan", plan, "--work-events")["items"]
+        self.assertEqual([item["taskId"] for item in unrelated], [outside["id"]])
+        self.assertEqual([item["text"] for item in self.request(url)[1]["latest"]], [own["text"]])

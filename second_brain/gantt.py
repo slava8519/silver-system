@@ -156,11 +156,17 @@ def _block(entry, root, task_path, newline):
     return newline.join([*lines, _END, ""])
 
 
-def _changes(lines, code=None, base=1):
+def _changes(lines, code=None, base=1, *, with_lines=False):
     if code is None:
         code, _ = fenced_lines(lines)
-    return [_payload(line.strip(), _CHANGE, base + n) for n, line in enumerate(lines)
-            if n not in code and line.startswith(_CHANGE)]
+    changes = []
+    for n, line in enumerate(lines):
+        if n not in code and line.startswith(_CHANGE):
+            change = _payload(line.strip(), _CHANGE, base + n)
+            if with_lines:
+                change["line"] = base + n
+            changes.append(change)
+    return changes
 
 
 def _deleted():
@@ -168,19 +174,25 @@ def _deleted():
     return {**_empty(), "author": "manual", "manual": True, "deleted": True}
 
 
-def _row_fields(record, *, all_entries=False):
+def _row_fields(record, *, all_entries=False, with_lines=False, all_history=False):
     lines = record["body"].splitlines(keepends=True)
     base = record["body_start"]
     code, _ = fenced_lines(lines)
-    changes = _changes(lines, code, base)
+    changes = _changes(lines, code, base, with_lines=with_lines)
     brief = _entries(lines, "brief", code=code, base=base)
     if brief:
         summary = brief[0][0]
+        if with_lines:
+            summary["line"] = base + brief[0][1] + int(lines[brief[0][1]].startswith(_OPEN))
     elif any(c.get("field") == "brief" for c in changes):
         summary = _deleted()
     else:
         summary = _empty()
-    latest = [entry for entry, _, _ in _entries(lines, "latest", code=code, base=base)]
+    latest = []
+    for entry, start, _ in _entries(lines, "latest", code=code, base=base):
+        if with_lines:
+            entry["line"] = base + start + int(lines[start].startswith(_OPEN))
+        latest.append(entry)
     latest.sort(key=lambda entry: entry["date"] or "", reverse=True)
     total = len(latest)
     if all_entries:
@@ -193,7 +205,7 @@ def _row_fields(record, *, all_entries=False):
     else:
         latest = latest[:_MAX_LATEST]
     return {"brief": summary, "latest": latest, "latestTotal": total,
-            "history": changes[-_MAX_HISTORY:][::-1], "historyTotal": len(changes)}
+            "history": (changes if all_history else changes[-_MAX_HISTORY:])[::-1], "historyTotal": len(changes)}
 
 
 def _write_history(lines, change, newline):
@@ -268,7 +280,7 @@ class Gantt:
                 header = storage._patch_header(header, record, {"start": start})
                 change = {"before": record.get("start"), "after": start}
             else:
-                change = self._write_entry(path, data, lines, newline, updated, accepted_manual_revision)
+                change = write_entry(self.root, path, data, lines, newline, updated, accepted_manual_revision)
             if change is None:
                 return current
             _write_history(lines, {**change, "field": field, "actor": actor, "updated": updated}, newline)
@@ -278,89 +290,90 @@ class Gantt:
             storage.replace_bytes(path, before, after)
             return result
 
-    def _write_entry(self, path, data, lines, newline, updated, accepted_manual_revision):
-        field, actor, entry_id = data["field"], data["actor"], data.get("entryId")
-        text = data.get("text")
-        if not isinstance(text, str):
-            raise ValueError("Введите текст правки.")
-        text = text.replace("\r\n", "\n").strip()
-        if (len(text) > 2400 or ("\0" in text or "\r" in text) or re.search(r"^#{1,2}\s|<!--\s*/?brain-", text, re.M)
-                or (not text and (field == "latest" or actor == "ai"))):
-            raise ValueError("Введите до 2400 символов без служебных меток или заголовков верхнего уровня.")
-        text_lines = text.splitlines()
-        if fenced_lines(text_lines)[1] != len(text_lines):
-            raise ValueError("Закройте блок кода в тексте записи.")
-        code, append_at = fenced_lines(lines)
-        bounds = _window(lines, field, code, 1)
-        entries = _entries(lines, field, bounds=bounds, code=code) if bounds else []
-        old = None
-        previous = _empty()
-        if field == "brief":
-            if entry_id is not None:
-                raise ValueError("ID события допустим только для поля latest.")
-            old = entries[0] if entries else None
-            if not old and any(c.get("field") == "brief" for c in _changes(lines, code)):
-                previous = _deleted()
-        elif entry_id is not None:
-            old = next((row for row in entries if row[0]["id"] == entry_id), None)
-            if not old:
-                if not any(c.get("field") == "latest" and c.get("entryId") == entry_id for c in _changes(lines, code)):
-                    raise storage.ConflictError("Событие не найдено. Перечитайте карточку.")
-                previous = _deleted()
-        if old:
-            previous = old[0]
-        accepted = accepted_manual_revision is not None
-        if accepted and not previous["manual"]:
-            raise storage.ConflictError("У этой записи нет защищённой правки для согласования.")
-        if actor == "ai" and previous["manual"] and not accepted:
-            raise storage.ConflictError("Поле защищено решением владельца. Согласуйте новую формулировку.")
-        if actor == "manual" and "sources" not in data:
-            # Existing evidence remains traceable through its digest even after a note moves.
-            sources = [{k: v for k, v in src.items() if k != "href"} for src in previous["sources"]]
-        else:
-            sources = verify_sources(self.root, data.get("sources", []), allow_originals=True)
-        if actor == "ai" and not sources:
-            raise ValueError("Для записи ИИ требуется ссылка на строку источника.")
-        entry = {"text": text, "author": actor, "manual": actor == "manual", "sources": sources, "updated": updated}
-        if accepted:
-            entry.update(manual=True, acceptedByOwner=True)
-        if field == "latest":
-            entry.update(id=entry_id or str(uuid.uuid4()), date=validate_due(data.get("date", previous.get("date"))))
-        # Applying the same values at a fresh revision must not duplicate events or history.
-        def same_as(candidate):
-            return (candidate["text"] == text and candidate["author"] == actor
-                    and candidate.get("date") == entry.get("date") and _source_keys(candidate["sources"]) == _source_keys(sources))
 
-        candidates = [previous] if old or entry_id is not None else [e for e, _, _ in entries]
-        if any(same_as(candidate) for candidate in candidates):
-            return None
-        if actor == "ai" and field == "latest" and entry["date"]:
-            # A text correction accepted by the owner keeps their already recorded event date.
-            if not (accepted and previous.get("date") == entry["date"]):
-                require_event_date(entry["date"], sources)
-        if actor == "ai" and field == "latest" and entry_id is None:
-            protected = {e["id"] for e, _, _ in entries if e["manual"]}
-            live = {e["id"] for e, _, _ in entries}
-            for change in _changes(lines, code):
-                if (change.get("field") == "latest" and (change["entryId"] in protected or change["entryId"] not in live)
-                        and change["after"] == text and change.get("date") == entry.get("date")
-                        and _source_keys(change.get("sources", [])) == _source_keys(sources)):
-                    raise storage.ConflictError("Владелец исправил или удалил это событие.")
-        block = _block(entry, self.root, path, newline)
-        if old:
-            # Native examples survive replacement of the surrounding prose. A block submitted
-            # as part of a managed field is itself editable from the field's original revision.
-            protected = [lines[n] for n in range(old[1], old[2]) if n in code] if previous["updated"] is None else []
-            lines[old[1]:old[2]] = [*block.splitlines(keepends=True), *protected]
-        elif bounds:
-            lines[bounds[0]:bounds[0]] = (newline + block).splitlines(keepends=True)
-        else:
-            section = newline + "## " + _HEADINGS[field] + newline + newline + block
-            lines[append_at:append_at] = section.splitlines(keepends=True)
-        change = {"entryId": entry.get("id"), "before": previous["text"], "after": text,
-                  "beforeAuthor": previous["author"], "beforeManual": previous["manual"],
-                  "beforeSources": previous["sources"], "sources": sources,
-                  "beforeDate": previous.get("date"), "date": entry.get("date")}
-        if accepted:
-            change.update(acceptedByOwner=True, acceptedManualRevision=accepted_manual_revision)
-        return change
+def write_entry(root, path, data, lines, newline, updated, accepted_manual_revision):
+    field, actor, entry_id = data["field"], data["actor"], data.get("entryId")
+    text = data.get("text")
+    if not isinstance(text, str):
+        raise ValueError("Введите текст правки.")
+    text = text.replace("\r\n", "\n").strip()
+    if (len(text) > 2400 or ("\0" in text or "\r" in text) or re.search(r"^#{1,2}\s|<!--\s*/?brain-", text, re.M)
+            or (not text and (field == "latest" or actor == "ai"))):
+        raise ValueError("Введите до 2400 символов без служебных меток или заголовков верхнего уровня.")
+    text_lines = text.splitlines()
+    if fenced_lines(text_lines)[1] != len(text_lines):
+        raise ValueError("Закройте блок кода в тексте записи.")
+    code, append_at = fenced_lines(lines)
+    bounds = _window(lines, field, code, 1)
+    entries = _entries(lines, field, bounds=bounds, code=code) if bounds else []
+    old = None
+    previous = _empty()
+    if field == "brief":
+        if entry_id is not None:
+            raise ValueError("ID события допустим только для поля latest.")
+        old = entries[0] if entries else None
+        if not old and any(c.get("field") == "brief" for c in _changes(lines, code)):
+            previous = _deleted()
+    elif entry_id is not None:
+        old = next((row for row in entries if row[0]["id"] == entry_id), None)
+        if not old:
+            if not any(c.get("field") == "latest" and c.get("entryId") == entry_id for c in _changes(lines, code)):
+                raise storage.ConflictError("Событие не найдено. Перечитайте карточку.")
+            previous = _deleted()
+    if old:
+        previous = old[0]
+    accepted = accepted_manual_revision is not None
+    if accepted and not previous["manual"]:
+        raise storage.ConflictError("У этой записи нет защищённой правки для согласования.")
+    if actor == "ai" and previous["manual"] and not accepted:
+        raise storage.ConflictError("Поле защищено решением владельца. Согласуйте новую формулировку.")
+    if actor == "manual" and "sources" not in data:
+        # Existing evidence remains traceable through its digest even after a note moves.
+        sources = [{k: v for k, v in src.items() if k != "href"} for src in previous["sources"]]
+    else:
+        sources = verify_sources(root, data.get("sources", []), allow_originals=True)
+    if actor == "ai" and not sources:
+        raise ValueError("Для записи ИИ требуется ссылка на строку источника.")
+    entry = {"text": text, "author": actor, "manual": actor == "manual", "sources": sources, "updated": updated}
+    if accepted:
+        entry.update(manual=True, acceptedByOwner=True)
+    if field == "latest":
+        entry.update(id=entry_id or str(uuid.uuid4()), date=validate_due(data.get("date", previous.get("date"))))
+    # Applying the same values at a fresh revision must not duplicate events or history.
+    def same_as(candidate):
+        return (candidate["text"] == text and candidate["author"] == actor
+                and candidate.get("date") == entry.get("date") and _source_keys(candidate["sources"]) == _source_keys(sources))
+
+    candidates = [previous] if old or entry_id is not None else [e for e, _, _ in entries]
+    if any(same_as(candidate) for candidate in candidates):
+        return None
+    if actor == "ai" and field == "latest" and entry["date"]:
+        # A text correction accepted by the owner keeps their already recorded event date.
+        if not (accepted and previous.get("date") == entry["date"]):
+            require_event_date(entry["date"], sources)
+    if actor == "ai" and field == "latest" and entry_id is None:
+        protected = {e["id"] for e, _, _ in entries if e["manual"]}
+        live = {e["id"] for e, _, _ in entries}
+        for change in _changes(lines, code):
+            if (change.get("field") == "latest" and (change["entryId"] in protected or change["entryId"] not in live)
+                    and change["after"] == text and change.get("date") == entry.get("date")
+                    and _source_keys(change.get("sources", [])) == _source_keys(sources)):
+                raise storage.ConflictError("Владелец исправил или удалил это событие.")
+    block = _block(entry, root, path, newline)
+    if old:
+        # Native examples survive replacement of the surrounding prose. A block submitted
+        # as part of a managed field is itself editable from the field's original revision.
+        protected = [lines[n] for n in range(old[1], old[2]) if n in code] if previous["updated"] is None else []
+        lines[old[1]:old[2]] = [*block.splitlines(keepends=True), *protected]
+    elif bounds:
+        lines[bounds[0]:bounds[0]] = (newline + block).splitlines(keepends=True)
+    else:
+        section = newline + "## " + _HEADINGS[field] + newline + newline + block
+        lines[append_at:append_at] = section.splitlines(keepends=True)
+    change = {"entryId": entry.get("id"), "before": previous["text"], "after": text,
+              "beforeAuthor": previous["author"], "beforeManual": previous["manual"],
+              "beforeSources": previous["sources"], "sources": sources,
+              "beforeDate": previous.get("date"), "date": entry.get("date")}
+    if accepted:
+        change.update(acceptedByOwner=True, acceptedManualRevision=accepted_manual_revision)
+    return change

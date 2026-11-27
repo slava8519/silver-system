@@ -1,0 +1,24 @@
+.gantt-layer-trigger::after { content: "▾"; margin-inline-start: .4em; font-size: .8em; }
+.gantt-layer-picker {
+  position: fixed; inset: auto; margin: 0; box-sizing: border-box; overflow-y: auto;
+  padding: 9px 12px; border: 1px solid #c9d0d6; border-radius: 7px;
+  box-shadow: 0 5px 20px #192a381f; background: white; color: #25323c;
+  font: 400 13px/1.35 var(--sans);
+}
+.gantt-layer-picker fieldset { min-width: 0; padding: 0; border: 0; margin: 0; }
+.gantt-layer-picker fieldset + fieldset { margin-top: 9px; }
+.gantt-layer-picker legend { padding: 0 4px 3px; font-size: 12px; font-weight: 650; color: #515e67; }
+.gantt-layer-picker label {
+  display: flex; align-items: center; gap: 8px; padding: 4px; border-radius: 3px; cursor: pointer;
+  font: inherit; color: inherit; text-transform: none; letter-spacing: normal;
+}
+.gantt-layer-picker label:hover { background: #f1f4f6; }
+.gantt-layer-picker input[type=checkbox] { width: 15px; min-width: 0; height: 15px; min-height: 0; margin: 0; accent-color: #3b5e80; }
+.gantt-stage [data-layer][hidden] { display: none; }
+.gantt-stage:not(.gantt-show-notes) .gantt-grid .gantt-percent::before { content: none; }
+.gantt-cursor-track { position: relative; height: 16px; }
+.gantt-cursor-stamp {
+  position: absolute; inset-block: 0; border-left: 1px solid currentColor; padding-inline-start: 4px;
+  white-space: nowrap; font: 600 11px/16px var(--sans); font-variant-numeric: tabular-nums; color: #ac3c36;
+}
+.gantt-cursor-stamp.align-end { transform: translateX(-100%); border: 0; border-right: 1px solid currentColor; padding-inline: 0 4px; }

@@ -183,6 +183,10 @@ class Cycles:
         included = included_projects(self.planning.root, plan)
         if included:
             view["includedProjects"] = included
+        from .gantt_groups import GanttGroups
+        journals = GanttGroups(self.planning.root).snapshot(entry)
+        if journals:
+            view["groupJournals"] = journals
         return {**view, "okr": structure, "revision": _digest(["close-plan-okr", view, structure])}
 
     def preview(self, plan_id):
@@ -190,6 +194,7 @@ class Cycles:
             view = self._preview(self.planning._find("plan", plan_id))
             if "includedProjects" in view:
                 view["includedProjectCount"] = len(view.pop("includedProjects"))
+            view.pop("groupJournals", None)
             structure = view.pop("okr", None)
             if structure and structure["objectives"]:
                 goals = structure["objectives"]
@@ -219,6 +224,8 @@ class Cycles:
             closed_at = datetime.now(timezone.utc).isoformat(timespec="microseconds")
             meta = {"version": 1, "id": plan_id, "title": plan["title"], "revision": revision,
                     "closedAt": closed_at, "okr": preview["okr"]}
+            if preview.get("groupJournals"):
+                meta["groupJournals"] = preview["groupJournals"]
             if preview.get("includedProjects"):
                 meta["includedProjects"] = preview["includedProjects"]
             if preview["okr"]["objectives"]:

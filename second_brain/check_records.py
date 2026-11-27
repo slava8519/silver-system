@@ -8,6 +8,7 @@ import re
 
 from . import cycles, dependencies, gantt, okr, okr_criteria, okr_links, okr_progress, people
 from . import plan_tree, planning, project_membership, project_updates, reports, storage, teams
+from .gantt_group_cards import GROUP_FIELDS, GROUP_FOLDER
 from .schedule import schedule_history
 
 
@@ -15,7 +16,7 @@ _FOLDERS = (*storage.KINDS.values(), "Tasks", "Plans", "People", "Reports",
             reports.TEMPLATES, reports.SERIES)
 _FIELDS = {
     **dict.fromkeys(storage.KINDS, ()), "person": (), "team": (), "task": planning.TASK_SCALARS,
-    "plan": (cycles.CYCLE_SEAL,), "objective": ("plan_id",), "key_result": okr._FIELDS,
+    "plan": (cycles.CYCLE_SEAL,), "objective": ("plan_id",), "key_result": okr._FIELDS, "gantt_group": GROUP_FIELDS,
     "report_issue": reports._ISSUE_FIELDS, "report_series": reports._SERIES_FIELDS,
     "weekly_review": ("plan_id",), "report_template": reports._TEMPLATE_FIELDS,
 }
@@ -23,6 +24,7 @@ _SCOPES = {
     **dict.fromkeys(storage.KINDS, tuple(storage.KINDS.values())),
     "task": ("Tasks",), "plan": ("Plans",), "person": ("People",), "team": ("People",),
     "key_result": ("Plans/OKR",), "objective": ("Plans/OKR",),
+    "gantt_group": (GROUP_FOLDER,),
     "weekly_review": ("Reports",), "report_issue": ("Reports",),
     "report_series": (reports.SERIES,), "report_template": (reports.TEMPLATES,),
 }
@@ -115,6 +117,8 @@ def _body_links(record, path, report):
     """Yield (stable ID, expected kind, one-based source line)."""
     kind, base = record["type"], record["body_start"]
     lines = record["body"].splitlines()
+    if kind in ("plan", "objective", "key_result", "gantt_group"):
+        gantt._row_fields(record, all_entries=True)
     if kind == "plan":
         closed = cycles.closed_metadata(record)
         if closed:
@@ -167,6 +171,7 @@ _REFS = {"note": {"direction": "direction"}, "project": {"direction": "direction
          "task": {"direction": "direction", "project": "project"},
          "key_result": {"direction": "direction", "objective_id": "objective"},
          "objective": {"plan_id": "plan", "direction": "direction"},
+         "gantt_group": {"plan_id": "plan"},
          "report_issue": {"series_id": "report_series"}}
 
 

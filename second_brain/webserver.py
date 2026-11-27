@@ -460,6 +460,24 @@ class Handler(BaseHTTPRequestHandler):
                     result["weeklyReviewError"] = "Не удалось прочитать выпуски из Reports."
         elif not post and path == "/api/plan/task":
             result = Gantt(root).detail(identifier)
+        elif not post and path in ("/api/plan/row", "/api/plan/row/events", "/api/plan/row/work-events"):
+            from .gantt_group_cards import work_events
+            from .gantt_groups import GanttGroups
+            limit, offset = int(data.get("limit", 12)), int(data.get("offset", 0))
+            if not 1 <= limit <= 20 or offset < 0:
+                raise ValueError("Укажите от 1 до 20 событий и неотрицательное смещение.")
+            if path.endswith("/work-events"):
+                result = work_events(root, data.get("planId"), data.get("kind"), identifier, limit=limit, offset=offset)
+            else:
+                result = GanttGroups(root).detail(data.get("planId"), data.get("kind"), identifier,
+                                                  limit=limit, offset=offset)
+        elif post and path == "/api/plan/row/edit":
+            from .gantt_groups import GanttGroups
+            required = {"id", "planId", "kind", "revision", "field", "text"}
+            if not required <= data.keys() or data.keys() - required - {"date", "sources", "entryId"}:
+                raise ValueError("Укажите строку, версию и текст ручной правки.")
+            edit = {key: value for key, value in data.items() if key not in ("kind", "planId")}
+            result = GanttGroups(root).edit(data["planId"], data["kind"], identifier, {**edit, "actor": "manual"})
         elif not post and path == "/api/plan/task-location":
             planning = Planning(root)
             with storage._vault_lock(root, write=False):

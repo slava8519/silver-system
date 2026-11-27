@@ -5,6 +5,25 @@ export function kindPrefix(kind, title) {
   return kind && !head.test(title.trim()) ? kind : "";
 }
 
+// Open a full OKR plan at result level. A link to a task must still reveal
+// the task's own occurrence, including through a context-only parent.
+export function revealTask(tree, selected, folded) {
+  let entry = tree.find(entry => entry.kind === "task" && entry.id === selected && !entry.contextOnly);
+  const nodes = new Map(tree.map(entry => [entry.key, entry]));
+  while (entry?.parentKey) {
+    folded.delete(entry.parentKey);
+    entry = nodes.get(entry.parentKey);
+  }
+}
+
+export function initialFolds(plan, scope, selected) {
+  if (scope || !plan.objectives?.length) return new Set();
+  const tree = plan.tree || [];
+  const folded = new Set(tree.filter(entry => entry.kind === "result" || entry.kind === "outside").map(entry => entry.key));
+  if (selected) revealTask(tree, selected, folded);
+  return folded;
+}
+
 // Keep all relationships visible. A shared task gets a single editable bar.
 export function treeRows(plan, scope, folded) {
   const tree = plan.tree || [];

@@ -4,6 +4,8 @@ const print = (parts) => new Intl.DateTimeFormat("ru-RU", {...parts, timeZone: "
 const fullDate = print({day: "numeric", month: "short", year: "numeric"});
 const dayMonth = print({day: "numeric", month: "short"});
 const monthYear = print({month: "long", year: "numeric"});
+const monthName = print({month: "short"});
+const numericDate = print({day: "2-digit", month: "2-digit"});
 
 export const dateLabels = Object.freeze({
   start: "Начало", due: "Согласованный срок", forecast: "Прогноз", completed: "Факт завершения"
@@ -118,14 +120,43 @@ export function fitWindow(rows, today, project) {
   return {start, size: Math.max(14, last - start + padding + 1)};
 }
 
+// On the six-week and quarterly scales, keep weeks aligned to Mondays and
+// label each month over the slice of the calendar actually visible.
+function weeklyScale(size) { return size > 35 && size <= 183; }
+
+export function monthBands({start, size, zoom}) {
+  if (zoom === "year" || !weeklyScale(size)) return [];
+  const end = start + size;
+  const bands = [];
+  for (let first = start; first < end;) {
+    const date = new Date(first * dayMs);
+    const year = date.getUTCFullYear();
+    const label = monthName.format(date);
+    date.setUTCDate(1);
+    date.setUTCMonth(date.getUTCMonth() + 1);
+    const next = Math.min(end, date.getTime() / dayMs);
+    bands.push({day: first, at: (first - start) / size, width: (next - first) / size, label, year});
+    first = next;
+  }
+  return bands;
+}
+
 export function ticks({start, size, zoom}) {
   if (zoom === "year") {
     const year = new Date(start * dayMs).getUTCFullYear();
-    const monthName = print({month: "short"});
     return Array.from({length: 12}, (_, month) => {
       const day = Date.UTC(year, month, 1) / dayMs;
       return {day, at: (day - start) / size, label: monthName.format(day * dayMs)};
     });
+  }
+  if (weeklyScale(size)) {
+    const step = size <= 112 ? 7 : 14;
+    const monday = start + (8 - new Date(start * dayMs).getUTCDay()) % 7;
+    const marks = [];
+    for (let day = monday; day < start + size; day += step) {
+      marks.push({day, at: (day - start) / size, label: numericDate.format(day * dayMs)});
+    }
+    return marks;
   }
   const step = [1, 2, 3, 7, 14, 28, 60, 90, 180, 365].find(number => size / number <= 10) || Math.ceil(size / 8);
   const ticks = [];
@@ -145,6 +176,27 @@ export function windowTitle({start, size}) {
     return dayMonth.format(first) + " — " + fullDate.format(last);
   }
   return fullDate.format(first) + " — " + fullDate.format(last);
+}
+
+// Choose a side of the actual tick, keeping its caption in the same month.
+// The grid still shows the tick at its recorded position if neither side fits.
+export function tickAlignments(ticks, months, width, labelWidths) {
+  let previousEnd = -Infinity;
+  return ticks.map((tick, index) => {
+    const month = months.find((band, i) => tick.day >= band.day && (!months[i + 1] || tick.day < months[i + 1].day));
+    const left = Math.max(previousEnd + 2, month ? month.at * width : 0);
+    const right = month ? (month.at + month.width) * width : width;
+    const x = tick.at * width, size = labelWidths[index];
+    if (x >= left - .01 && x + size <= right + .01) {
+      previousEnd = x + size;
+      return "after";
+    }
+    if (x - size >= left - .01 && x <= right + .01) {
+      previousEnd = x;
+      return "before";
+    }
+    return "hidden";
+  });
 }
 
 export function plot(row, window) {

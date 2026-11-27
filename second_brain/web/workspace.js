@@ -470,6 +470,7 @@ import { showVaultCheck } from "./vault-check.js";
     const [page, recordId] = route.split("/");
     const isActivity = ["activity", "activity-help", "okr", "project-gantt"].includes(page);
     const isPlan = page === "plans" || page === "plan" || isActivity;
+    document.body.classList.toggle("gantt-screen", Boolean(recordId) && (page === "plan" || page === "project-gantt"));
     const nav = page === "check" ? "overview" : page === "map-help" ? "map" : isActivity ? "activity" : isPlan ? "plans" : page === "person" ? "people" : ["new","edit","record"].includes(page) ? "records" : page;
     main.classList.toggle("planning-main", isPlan);
     main.setAttribute("aria-busy","true");
