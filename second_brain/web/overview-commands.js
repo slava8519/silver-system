@@ -4,7 +4,10 @@ const requests = [
   "Покажи вопросы ко мне из Inbox",
   "Покажи состояние направлений и последние события",
   "Покажи ручные правки Ганта",
-  "Пересобери поисковый индекс"
+  "Прикинь готовность работ по последним встречам и укажи источники",
+  "Покажи, по каким сериям отчётов пора подготовить следующий выпуск",
+  "Пересобери поисковый индекс",
+  "Проверь, безопасно ли обновить программу «Второй мозг», и при необходимости составь план обновления"
 ];
 
 export function renderOverviewCommands({node, button}, vaultPath) {
@@ -12,7 +15,7 @@ export function renderOverviewCommands({node, button}, vaultPath) {
   const heading = node("h2", "work-heading", "Управление вторым мозгом");
   heading.id = "overview-commands-heading";
   panel.setAttribute("aria-labelledby", heading.id);
-  const intro = node("p", "overview-command-intro", "Вставьте запрос в чат Codex. В него войдёт путь к этому хранилищу.");
+  const intro = node("p", "overview-command-intro", "Скопируйте запрос в чат Codex или Claude Code. В текст войдёт путь к этому хранилищу.");
   const list = node("ul", "overview-command-list");
   const manual = node("div", "overview-command-manual");
   manual.hidden = true;
@@ -75,7 +78,7 @@ export function renderOverviewCommands({node, button}, vaultPath) {
       lastCopied = control;
       control.textContent = "Скопировано";
       status.dataset.state = "copied";
-      status.textContent = "Запрос скопирован. Вставьте его в Codex.";
+      status.textContent = "Запрос скопирован. Вставьте его в чат.";
     } finally {
       control.setAttribute("aria-busy", "false");
       if (!lastCopied) control.textContent = "Копировать";

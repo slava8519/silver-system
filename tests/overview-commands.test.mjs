@@ -22,16 +22,24 @@ function panel(vault, clipboard, execCommand) {
   return {doc, rows: list.children, manual, status, section};
 }
 
-test("all Codex requests copy their visible action and the exact selected vault", async () => {
+test("management requests copy their visible action and the exact selected vault", async () => {
   const vault = "/Volumes/Мои записи/Кедр & Маяк";
   const copied = [];
   const {rows, manual, status, section} = panel(vault, {writeText: async text => copied.push(text)});
   assert.match(section.children[0].textContent, /Управление вторым мозгом/);
   assert.equal(copied.length, 0);
-  assert.equal(rows.length, 6);
-  assert.equal(rows[0].children[0].textContent, "Обнови все сводки и истории");
-  assert.ok(rows.some(row => row.children[0].textContent === "Покажи состояние направлений и последние события"));
-  assert.ok(rows.some(row => row.children[0].textContent === "Пересобери поисковый индекс"));
+  const labels = rows.map(row => row.children[0].textContent);
+  assert.equal(labels.length, 9);
+  assert.equal(labels[0], "Обнови все сводки и истории");
+  for (const request of [
+    "Покажи состояние направлений и последние события",
+    "Прикинь готовность работ по последним встречам и укажи источники",
+    "Покажи, по каким сериям отчётов пора подготовить следующий выпуск",
+    "Пересобери поисковый индекс",
+    "Проверь, безопасно ли обновить программу «Второй мозг», и при необходимости составь план обновления"
+  ]) {
+    assert.ok(labels.includes(request), request);
+  }
   for (const [index, row] of rows.entries()) {
     const [label, control] = row.children;
     assert.equal(control.tag, "button");
