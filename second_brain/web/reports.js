@@ -1,5 +1,6 @@
 import {cardLinks} from "./gantt-detail.js";
-import {copyControls, reportDocument, reportPlainText} from "./report-document.js";
+import {copyControls, reportPlainText} from "./report-document.js";
+import {recordDocument} from "./record-document.js";
 import {issueForm, seriesForm, templateForm} from "./report-forms.js";
 import {templateChanges} from "./report-template-changes.js";
 
@@ -133,22 +134,9 @@ export function reportsView(ui) {
     await load(false);
   }
   function prose(vault, body, path) {
-    return reportDocument(body, (label, href) => {
-      if (/^https?:\/\//i.test(href) || /^\/(?:#|source\/|report-source\/|evidence\/|original\/)/.test(href)) {
-        const a = link(label, href, "text-link");
-        a.target = "_blank"; a.rel = "noopener noreferrer"; return a;
-      }
-      if (path && !/^(?:[a-z][\w+.-]*:|[/#\\])/i.test(href)) {
-        const relative = new URL(href, "https://vault.invalid/records/" + path.split("/").map(encodeURIComponent).join("/"));
-        if (relative.origin === "https://vault.invalid" && relative.pathname.startsWith("/records/")) {
-          try {
-            const file = decodeURIComponent(relative.pathname.slice(9));
-            if (!file.split(/[\\/]/).includes("..") && file.endsWith(".md")) return cardLinks(ui, vault.root)(label, file);
-          } catch { /* Malformed file links keep their visible label. */ }
-        }
-      }
-      return label;
-    });
+    const doc = recordDocument({path, vaultName:vault.name}, body, ui, {nativeLink:cardLinks(ui, vault.root), reportLinks:true});
+    doc.className = "report-prose";
+    return doc;
   }
   function prompt(vault, values = () => ({})) {
     const container = node("aside", "report-prompt");
@@ -193,6 +181,7 @@ export function reportsView(ui) {
     const heading = node("h1", "report-paper-title", issue.title);
     const stamp = period(issue.start, issue.end);
     paper.append(heading);
+    if (issue.releaseDate) paper.append(node("p", "report-meta", "Дата выпуска " + period(issue.releaseDate, issue.releaseDate)));
     if (stamp) paper.append(node("p", "report-meta", stamp));
     if (issue.asOf) paper.append(node("p", "report-meta", "Данные на " + period(issue.asOf, issue.asOf)));
     const documentView = prose(vault, issue.body, issue.path);

@@ -59,6 +59,8 @@ async function fixture(initial = stopped) {
   class ItemView {
     constructor() { this.app = app; this.contentEl = new Element('div'); }
     registerDomEvent(target, name, callback) { assert.equal(name, 'message'); listener = callback; }
+    addAction(icon, title, callback) { return {icon, title, click: callback}; }
+    onPaneMenu() {}
   }
   class Plugin {
     constructor() { this.app = app; this.manifest = { dir: packageDir }; }
@@ -100,12 +102,25 @@ test('restoring a stopped tab stays idle; ribbon starts full workspace, stop rel
   assert.match(frame.attrs.attr.sandbox, /allow-downloads/);
   await f.ribbon();
   assert.equal(v.frame, frame); // Do not lose a form in the current section.
-  await v.contentEl.children[0].children[1].click();
+  assert.deepEqual(v.contentEl.children, [frame]);
+  assert.equal(v.browserAction.hidden, false);
+  const menu = new Map();
+  v.onPaneMenu({ addItem(build) {
+    const item = {
+      setTitle(title) { this.title = title; return this; },
+      setIcon() { return this; },
+      onClick(callback) { menu.set(this.title, callback); return this; }
+    };
+    build(item);
+  } }, 'tab-header');
+  assert.equal(menu.has('Открыть в браузере'), true);
+  await menu.get('Остановить админку')();
   assert.equal(v.frame, null);
+  assert.equal(v.browserAction.hidden, true);
   await f.ribbon();
   assert.ok(v.frame);
   await f.commands.open();
-  assert.match(v.frame.src, /#plans$/);
+  assert.match(v.frame.src, /#activity\?view=plans$/);
 });
 
 test('browser action passes through the current section or source, stripping iframe parameters', async () => {
@@ -116,7 +131,7 @@ test('browser action passes through the current section or source, stripping ifr
     f.send({ origin, source: v.frame.contentWindow, data: { type: 'second-brain-location', route: value }, ...overrides });
   }
   route('/#map?id=123&group=plans');
-  await v.contentEl.children[0].children[0].click();
+  await v.browserAction.click();
   route('/source/note?ref=a&embed=workspace&binding=secret&line=17');
   route('/#inbox', { source: {} });
   route('/#overview', { origin: 'http://127.0.0.1:8770' });
@@ -149,6 +164,21 @@ test('only a source message from the bound frame opens a file in the current vau
   assert.deepEqual(f.opened, [5]);
   f.send({ ...event, data: { ...event.data, line: undefined, subpath: '#Ход работ' } });
   assert.deepEqual(f.opened, [5, 11]);
+});
+
+test('the bound workspace opens external web links in the system browser', async () => {
+  const f = await fixture(running);
+  await f.restore();
+  const event = {source:f.view().frame.contentWindow, origin,
+    data:{type:'second-brain-open-web-link', href:'https://example.org/research?q=test#section'}};
+  f.send({...event, source:{}});
+  f.send({...event, origin:'https://example.org'});
+  for (const href of ['file:///note', 'obsidian://open', 'javascript:void(0)', 'data:text/plain,hi', '/relative', origin + '/api/workspace']) {
+    f.send({...event, data:{...event.data, href}});
+  }
+  assert.deepEqual(f.external, []);
+  f.send(event);
+  assert.deepEqual(f.external, [event.data.href]);
 });
 
 test('a delayed verification cannot reopen a closed view; a legacy server shows upgrade guidance', async () => {

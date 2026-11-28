@@ -38,6 +38,8 @@ class AdminView extends ItemView {
 
   async onOpen() {
     this.contentEl.addClass('second-brain-gantt');
+    this.browserAction = this.addAction('external-link', 'Открыть в браузере', () => this.openBrowser());
+    this.browserAction.hidden = true;
     this.registerDomEvent(this.contentEl.ownerDocument.defaultView, 'message', event => {
       if (!this.frame || event.source !== this.frame.contentWindow || event.origin !== this.origin) return;
       if (event.data?.type === 'second-brain-location') {
@@ -45,10 +47,27 @@ class AdminView extends ItemView {
         if (route) this.route = route;
       } else if (event.data?.type === 'second-brain-open-source') {
         this.openSource(event.data).catch(() => new Notice('Не удалось открыть запись.'));
+      } else if (event.data?.type === 'second-brain-open-web-link') {
+        this.openWebLink(event.data.href).catch(() => new Notice('Не удалось открыть ссылку.'));
       }
     });
     // Restoring an Obsidian layout should leave a stopped server idle.
     await this.connect();
+  }
+
+  onPaneMenu(menu, source) {
+    super.onPaneMenu(menu, source);
+    if (!this.frame) return;
+    menu.addItem(item => item.setTitle('Открыть в браузере').setIcon('external-link').onClick(() => this.openBrowser()));
+    menu.addItem(item => item.setTitle('Остановить админку').setIcon('square').onClick(() => this.plugin.stop()));
+  }
+
+  async openWebLink(href) {
+    if (typeof href !== 'string') return;
+    let target;
+    try { target = new URL(href); } catch { return; }
+    if (!['https:', 'http:'].includes(target.protocol) || target.origin === this.origin) return;
+    await shell.openExternal(target.href);
   }
 
   async openSource({ path, line, subpath }) {
@@ -79,6 +98,7 @@ class AdminView extends ItemView {
   status(text, action) {
     this.contentEl.empty();
     this.frame = null;
+    this.browserAction.hidden = true;
     const panel = this.contentEl.createDiv({ cls: 'second-brain-gantt-status' });
     panel.createEl('p', { text, attr: { role: 'status' } });
     if (action) panel.createEl('button', { text: action, cls: 'mod-cta' })
@@ -116,11 +136,7 @@ class AdminView extends ItemView {
       return;
     }
     this.contentEl.empty();
-    const bar = this.contentEl.createDiv({ cls: 'second-brain-admin-controls' });
-    bar.createEl('button', { text: 'Открыть в браузере' })
-      .addEventListener('click', () => this.openBrowser());
-    bar.createEl('button', { text: 'Остановить админку' })
-      .addEventListener('click', () => this.plugin.stop());
+    this.browserAction.hidden = false;
     this.frame = this.contentEl.createEl('iframe', {
       cls: 'second-brain-gantt-frame',
       attr: {
@@ -212,7 +228,7 @@ module.exports = class SecondBrainPlugin extends Plugin {
     this.registerView(VIEW, leaf => new AdminView(leaf, this));
     this.addRibbonIcon('brain', 'Второй мозг', () => this.activate());
     this.addCommand({ id: 'open-admin', name: 'Открыть админку', callback: () => this.activate() });
-    this.addCommand({ id: 'open', name: 'Открыть Гант', callback: () => this.activate('/#plans') });
+    this.addCommand({ id: 'open', name: 'Открыть Гант', callback: () => this.activate('/#activity?view=plans') });
     this.addCommand({ id: 'stop-admin', name: 'Остановить админку', callback: () => this.stop() });
     this.addSettingTab(new AdminSettings(this.app, this));
   }

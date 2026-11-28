@@ -1,4 +1,5 @@
 import {dateText} from "./gantt-axis.js";
+import {recordDocument} from "./record-document.js";
 
 export function projectUpdatesPanel(ui, project, afterSave) {
   const {node, button, link, notice, api} = ui;
@@ -26,7 +27,7 @@ export function projectUpdatesPanel(ui, project, afterSave) {
   if (!current.brief?.text) brief.append(node("p", "muted", current.warnings?.length
     ? "Сводка недоступна." : "Сводка проекта пока не записана."));
   else {
-    brief.append(node("p", "project-brief-text", current.brief.text));
+    brief.append(recordDocument(project, current.brief.text, ui));
     const byline = current.brief.acceptedByOwner ? "ИИ · принято владельцем"
       : current.brief.author === "manual" ? "Формулировка владельца" : "Сводка ИИ";
     brief.append(node("small", "muted", byline));
@@ -57,7 +58,7 @@ export function projectUpdatesPanel(ui, project, afterSave) {
       const li = node("li");
       const stamp = node(row.date ? "time" : "small", "project-event-date", dateText(row.date));
       if (row.date) stamp.dateTime = row.date;
-      li.append(stamp, node("p", "", row.text));
+      li.append(stamp, recordDocument(project, row.text, ui));
       appendSources(li, row);
       events.append(li);
     }

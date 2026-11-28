@@ -26,7 +26,7 @@ export function progressValue(value) {
 
 export function progressText(value) {
   const number = progressValue(value);
-  return number === null ? "—" : String(number).replace(".", ",") + "%";
+  return number === null ? "—" : Math.round(number) + "%";
 }
 
 // The chart describes stored dates relative to the selected snapshot. A
@@ -180,18 +180,19 @@ export function windowTitle({start, size}) {
 
 // Choose a side of the actual tick, keeping its caption in the same month.
 // The grid still shows the tick at its recorded position if neither side fits.
-export function tickAlignments(ticks, months, width, labelWidths) {
+export function tickAlignments(ticks, months, width, labelWidths, occupied) {
   let previousEnd = -Infinity;
+  const clear = (start, end) => !occupied || end + 2 <= occupied[0] || start >= occupied[1] + 2;
   return ticks.map((tick, index) => {
     const month = months.find((band, i) => tick.day >= band.day && (!months[i + 1] || tick.day < months[i + 1].day));
     const left = Math.max(previousEnd + 2, month ? month.at * width : 0);
     const right = month ? (month.at + month.width) * width : width;
     const x = tick.at * width, size = labelWidths[index];
-    if (x >= left - .01 && x + size <= right + .01) {
+    if (x >= left - .01 && x + size <= right + .01 && clear(x, x + size)) {
       previousEnd = x + size;
       return "after";
     }
-    if (x - size >= left - .01 && x <= right + .01) {
+    if (x - size >= left - .01 && x <= right + .01 && clear(x - size, x)) {
       previousEnd = x;
       return "before";
     }

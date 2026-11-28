@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import json
+from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -8,7 +9,7 @@ from unittest.mock import patch
 from urllib.parse import unquote
 
 from second_brain import reports, storage
-from second_brain.query import _line_ref, _state_sources
+from second_brain.query import WorkspaceQuery, _line_ref, _state_sources
 from second_brain.vault_check import check_vault
 from second_brain.cycles import Cycles
 from second_brain.planning import Planning
@@ -78,6 +79,19 @@ class Reports(unittest.TestCase):
         self.assertTrue(reports.get_issue(self.root, saved["id"])["templateChanged"])
         self.assertTrue(self.issue()["replayed"])
 
+    def test_historical_issue_without_period_keeps_its_release_date_and_series_calendar(self):
+        series = self.series()
+        for token, day in (("newer", "2026-10-26"), ("older", "2026-10-19")):
+            issue = self.issue(request_id=token, template_id=series["templateId"])
+            path = self.root / issue["path"]
+            original = path.read_text()
+            path.write_text(original.replace("created_at:", 'release_date: "' + day + '"\n'
+                                             + 'series_id: "' + series["id"] + '"\ncreated_at:', 1))
+        rows = reports.list_issues(self.root, series_id=series["id"])["items"]
+        self.assertEqual([r["releaseDate"] for r in rows], ["2026-10-26", "2026-10-19"])
+        self.assertTrue(all(r["start"] is None and r["end"] is None for r in rows))
+        self.assertEqual(reports.get_series(self.root, series["id"])["nextStart"], series["start"])
+
     def test_custom_template_history_retry_and_concurrent_changes(self):
         first = reports.save_template(self.root, **self.form, request_id="journal")
         self.assertEqual(reports.save_template(self.root, **self.form, request_id="journal"), first)
@@ -137,14 +151,59 @@ class Reports(unittest.TestCase):
         proof.write_text("Контроль\n\nПроверено\n")
         self.assertEqual(reports.read_issue_source(self.root, issue["id"], 0)["line"], 3)
 
+    def test_archived_text_and_markdown_are_bound_to_the_hash_of_the_whole_original(self):
+        for ext in ("txt", "md"):
+            with self.subTest(ext=ext):
+                raw = ("---\nid: original-card\n---\nИтог подтверждён.\nПротокол " + ext + "\n").encode()
+                digest = sha256(raw).hexdigest()
+                relative = f"Sources/Originals/{digest}.{ext}"
+                path = self.root / relative
+                path.write_bytes(raw)
+                source = {"path": relative, "line": 4, "claim": "Итог"}
+                if ext == "md":
+                    source["id"] = "original-card"
+                issue = self.issue(sources=[source], request_id=ext)
+                proof = reports.read_issue_source(self.root, issue["id"], 0)
+                self.assertEqual((proof["available"], proof["id"], proof["quote"], proof["claim"]),
+                                 (True, digest, "Итог подтверждён.", "Итог"))
+                if ext == "md":
+                    # Old reports used the ID in the original Markdown frontmatter.
+                    issue_path = self.root / issue["path"]
+                    issue_path.write_text(issue_path.read_text().replace('"id":"' + digest + '"', '"id":"original-card"'))
+                    self.assertTrue(reports.read_issue_source(self.root, issue["id"], 0)["available"])
+                # Even an unchanged cited line cannot authenticate a changed original.
+                path.write_bytes(raw + b"extra\n")
+                proof = reports.read_issue_source(self.root, issue["id"], 0)
+                self.assertEqual((proof["available"], proof["lines"], proof["quote"]), (False, [], "Итог подтверждён."))
+                with self.assertRaises(storage.ConflictError):
+                    self.issue(sources=[source], request_id="changed-" + ext)
+                path.write_bytes(raw)
+                self.assertTrue(reports.read_issue_source(self.root, issue["id"], 0)["available"])
+
+    def test_report_source_follows_card_across_record_folders_and_rejects_ambiguous_move(self):
+        note = storage.create(self.root, "note", "Основание", "Получено три образца.")
+        source = {"path": note.relative_to(self.root).as_posix(), "line": storage.read_record(note)["body_start"]}
+        issue = self.issue(sources=[source])
+        moved = note.rename(self.root / "Projects/Протокол.md")
+        moved.write_text(moved.read_text().replace("Получено", "\nПолучено"))
+        proof = reports.read_issue_source(self.root, issue["id"], 0)
+        self.assertTrue(proof["available"])
+        self.assertEqual((proof["path"], proof["line"]), ("Projects/Протокол.md", source["line"] + 1))
+        (self.root / "Directions/Копия.md").write_bytes(moved.read_bytes())
+        self.assertFalse(reports.read_issue_source(self.root, issue["id"], 0)["available"])
+
     def test_project_field_citations_follow_the_field_and_never_old_values_in_prose(self):
         project = storage.create(self.root, "project", "Переезд", status="Готов",
                                  due="2026-11-30", next_step="Подписать", body="Журнал\n")
+        project.write_text(project.read_text().replace("status:", 'owner: "Ирина"\nstatus:'))
         record = storage.read_record(project, include_raw=True)
         fields = [{"path": s["path"], "line": s["start"], "quote": s["lines"][0]["text"], "ref": s["ref"]}
                   for _, s in _state_sources(self.root, project, record)]
         issue = self.issue(sources=fields)
         self.assertEqual([s["ref"] for s in issue["sources"]], [s["ref"] for s in fields])
+        owner, = WorkspaceQuery(self.root).ask({"query": "Кто владелец проекта «Переезд»?"})["items"]
+        self.assertEqual(owner["answer"], "Ирина")
+        self.assertIn(owner["source"]["ref"], [s["ref"] for s in issue["sources"] if s["scope"] == "field"])
         old = self.issue(sources=fields, request_id="legacy")
         old_path = self.root / old["path"]
         old_lines = old_path.read_text().splitlines()

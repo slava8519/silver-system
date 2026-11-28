@@ -28,13 +28,18 @@ def add_commands(commands):
     ready.add_argument("--actor", choices=("ai", "manual"))
     ready.add_argument("--owner-confirmed", action="store_true")
     _page_arguments(ready)
+    plan = commands.add_parser("plan-readiness", help="показать сохранённую готовность работ плана и строки для сверки")
+    plan.add_argument("plan")
+    plan.add_argument("--review-on", metavar="ГГГГ-ММ-ДД", help="проверить просроченный прогноз и ноль спустя неделю от начала")
+    plan.add_argument("--candidates", action="store_true", help="показать только строки с признаками для сверки")
+    _page_arguments(plan)
     progress = commands.add_parser("okr-progress", help="проверить готовность и вклады по плану, цели или КР")
     progress.add_argument("plan")
     scope = progress.add_mutually_exclusive_group()
     scope.add_argument("--objective")
     scope.add_argument("--result")
     _page_arguments(progress)
-    for command in (weight, ready, progress):
+    for command in (weight, ready, progress, plan):
         command.set_defaults(okr_progress=True)
 
 
@@ -97,6 +102,10 @@ def _progress_page(service, args):
 
 
 def run(root, args):
+    if args.command == "plan-readiness":
+        from .plan_readiness import plan_readiness
+        return plan_readiness(root, args.plan, limit=args.limit, offset=args.offset,
+                              review_on=args.review_on, candidates=args.candidates)
     service = Progress(root)
     if args.command == "okr-progress":
         return _progress_page(service, args)

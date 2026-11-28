@@ -1,3 +1,5 @@
+import {progressText} from "./gantt-axis.js";
+
 export const boardURL = id => id ? "#okr?" + new URLSearchParams({plan: id}) : "#activity";
 export const resultURL = (id, plan) => "#okr/" + encodeURIComponent(id) + (plan ? "?" + new URLSearchParams({plan}) : "");
 export const planName = row => row.title + (row.status === "closed" ? " · закрыт" : "");
@@ -24,7 +26,7 @@ export function checkSummary(row) {
   return "Выполнено " + checks(row);
 }
 export function readiness(progress) {
-  return progress?.value != null ? quantity(progress.value, "%") : "—";
+  return progressText(progress?.value);
 }
 export function fractionPercent(weight) {
   if (weight == null) return "—";

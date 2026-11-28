@@ -205,6 +205,11 @@ class Handler(BaseHTTPRequestHandler):
                                         offset=int(params.get("offset", 0)), direction=params.get("direction"))
             self._send(200, result)
             return
+        elif self.mode == "work" and path == "/api/inbox/arrivals":
+            from .inbox_activity import inbox_activity
+            self._send(200, inbox_activity(self.server.vault.root, kind=params.get("kind"), day=params.get("day"),
+                                           limit=int(params.get("limit", 3)), offset=int(params.get("offset", 0))))
+            return
         elif self.mode == "work" and path in ("/api/map", "/api/map/source"):
             from .relation_map import RelationMap
             service = RelationMap(self.server.vault.root)
@@ -243,10 +248,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, result)
             return
         elif self.mode == "work" and path == "/api/record":
-            record_id = parse_qs(url.query).get("id", [""])[0]
-            if not record_id:
+            if "path" in params:
+                record = self.server.vault.linked_record(params["path"], short=params.get("short") == "1")
+            elif params.get("id"):
+                record = self.server.vault.get_record(params["id"])
+            else:
                 raise ValueError("Укажите ID карточки.")
-            self._send(200, {**self.server.vault.get_record(record_id), "vaultName": self.server.vault.root.name})
+            self._send(200, {**record, "vaultName": self.server.vault.root.name})
             return
         elif self.mode == "demo" and path == "/api/guide":
             self._send(200, guide.guide())

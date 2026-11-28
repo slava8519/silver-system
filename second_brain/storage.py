@@ -19,6 +19,7 @@ from urllib.parse import quote
 
 KINDS = {"direction": "Directions", "note": "Notes", "project": "Projects"}
 STATE_FIELDS = ("status", "due", "next_step")
+PROJECT_EVIDENCE_FIELDS = (*STATE_FIELDS, "owner")
 EDITABLE = {"title", "aliases", "direction", "project_start", *STATE_FIELDS}
 FOLDERS = (
     "Inbox", *KINDS.values(), "People", "Plans", "Tasks", "Reports", "Sources/Originals",
@@ -159,6 +160,10 @@ def _aliases(value):
     return aliases
 
 
+def _record_content(data, body):
+    return {"body": body.decode("utf-8"), "revision": hashlib.sha256(data).hexdigest()}
+
+
 def _parse_record(path, data, *, kinds=KINDS, optional_scalars=()):
     lines = data.splitlines(keepends=True)
     if not lines or lines[0].rstrip(b"\r\n") != b"---":
@@ -173,6 +178,8 @@ def _parse_record(path, data, *, kinds=KINDS, optional_scalars=()):
         raise UnmanagedMarkdown(path)
     if end is None:
         raise ValueError(f"Не закрыта YAML-шапка: {path}")
+    if "project" in types:
+        optional_scalars = (*optional_scalars, *PROJECT_EVIDENCE_FIELDS)
     fields = {}
     field_lines = {}
     key = None
@@ -212,8 +219,7 @@ def _parse_record(path, data, *, kinds=KINDS, optional_scalars=()):
     fields["schema_version"] = 1
     fields.setdefault("aliases", [])
     fields.setdefault("direction", None)
-    fields.update(field_lines=field_lines, body=b"".join(lines[end + 1:]).decode("utf-8"), body_start=end + 2,
-                  revision=hashlib.sha256(data).hexdigest())
+    fields.update(field_lines=field_lines, body_start=end + 2, **_record_content(data, b"".join(lines[end + 1:])))
     return fields, b"".join(lines[:end + 1])
 
 
@@ -231,15 +237,19 @@ def read_record(path: Path, *, include_raw=False) -> dict:
 def read_header(path):
     """Read the complete frontmatter without loading the Markdown body."""
     with path.open("rb") as stream:
-        first = stream.readline()
-        if first.rstrip(b"\r\n") != b"---":
-            return b""
-        header = [first]
-        for line in stream:
-            header.append(line)
-            if line.rstrip(b"\r\n") in (b"---", b"..."):
-                break
-        return b"".join(header)
+        return read_header_from(stream)
+
+
+def read_header_from(stream):
+    first = stream.readline()
+    if first.rstrip(b"\r\n") != b"---":
+        return b""
+    header = [first]
+    for line in stream:
+        header.append(line)
+        if line.rstrip(b"\r\n") in (b"---", b"..."):
+            break
+    return b"".join(header)
 
 
 def iter_markdown_paths(root: Path, *, folders=None):
@@ -257,13 +267,21 @@ def iter_markdown_paths(root: Path, *, folders=None):
                 yield path
 
 
-def iter_records(root: Path):
+def iter_records(root: Path, *, direction_ids=None):
+    """When scoped, load bodies only for records belonging to the requested directions."""
+    allowed = frozenset(direction_ids) if direction_ids is not None else None
     for path in iter_markdown_paths(root):
+        if allowed is not None:
+            header = read_header(path)
+            field = b"id:" if _header_has(header, b"type:", "direction") else b"direction:"
+            if not any(_header_has(header, field, identifier) for identifier in allowed):
+                continue
         try:
             record = read_record(path)
         except UnmanagedMarkdown:
             continue
-        yield path, record
+        if allowed is None or (record["id"] if record["type"] == "direction" else record["direction"]) in allowed:
+            yield path, record
 
 
 def _header_has(header, field, value):
@@ -295,6 +313,16 @@ def direction_headers(root):
 
 
 def find_record(root: Path, record_id: str) -> Path:
+    from . import search_index
+    root = Path(root).resolve()
+    with search_index.optional(root, allow_sync=False) as db:
+        if db is not None:
+            row = search_index.find(db, record_id)
+            path = search_index.record_path(root, row["path"])
+            path = _inside(root, path.relative_to(root))
+            if path.is_file() and _header_has(read_header(path), b"id:", record_id):
+                return path
+    # Missing or stale cache, or an editor moved the selected card during the lookup.
     matches = []
     for path in iter_markdown_paths(root):
         if not _header_has(read_header(path), b"id:", record_id):
@@ -461,6 +489,22 @@ def _write_lock(root):
 _QUOTES_OR_COMMENT = re.compile(rb'''"(?:\\.|[^"\\])*"|'(?:''|[^'])*'|(?:^|\s)(#.*)$''')
 
 
+def editable_scalar(record, header, field):
+    """Read an optional scalar for editing, refusing opaque YAML owned by the user."""
+    value = record.get(field)
+    number = record["field_lines"].get(field)
+    if number is None:
+        return value
+    lines = header.decode().splitlines()
+    raw = lines[number - 1].partition(":")[2].strip()
+    if value is None and raw and not raw.startswith("#") and not re.fullmatch(r"(?:null|~)(?:\s+#.*)?", raw, re.I):
+        raise ValueError(f"Для изменения сложного поля {field} откройте Markdown.")
+    following = next((line for line in lines[number:] if line.strip() and not line.lstrip().startswith("#")), "")
+    if following.startswith((" ", "\t", "- ")) or following == "-":
+        raise ValueError(f"Для изменения многострочного поля {field} откройте Markdown.")
+    return value
+
+
 def _comment(value):
     for match in _QUOTES_OR_COMMENT.finditer(value.rstrip(b"\r\n")):
         if match[1]:
@@ -520,6 +564,8 @@ def edit(root: Path, record_id: str, revision: str, changes: dict) -> Path:
         record, header = _parse_record(path, data)
         if record["id"] != record_id or record["revision"] != revision:
             raise ConflictError(f"Файл изменился. Перечитайте запись: {path}")
+        for key in changes.keys() & {"direction", "project_start", *STATE_FIELDS}:
+            editable_scalar(record, header, key)
         _validate_project_dates(record["type"], record, changes)
         if "direction" in changes and changes["direction"] != record["direction"]:
             _check_direction(root, record["type"], changes["direction"])

@@ -62,7 +62,7 @@ export async function activityCatalog(ui, view, defaultScope = "all") {
   const helpIcon = node("span", "about-icon", "i");
   helpIcon.setAttribute("aria-hidden", "true");
   help.prepend(helpIcon);
-  const heading = ui.pageHead(data.name, "Проектная деятельность", help,createProject,createPlan);
+  const heading = ui.pageHead(data.name, "Проекты и Гант", help,createProject,createPlan);
   heading.classList.add("activity-heading");
   const toolbar = node("div","activity-toolbar");
   const tabs = node("div","activity-scopes");

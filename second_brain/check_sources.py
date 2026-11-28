@@ -132,6 +132,15 @@ def _check_receipt(root, receipt, original, report):
     if bad_line:
         report.add("receipt_header", receipt, bad_line, "Сверьте шапку разбора и ID источника с именем файла.")
         return
+    try:
+        remainder = inbox.manual_remainder(raw)
+        if remainder and original:
+            location = next(i for i, line in enumerate(lines, 1) if line.startswith(inbox._REMAINDER))
+            # The marker is sorted. Existence of its last line covers all previous coordinates.
+            check_quotes(original, {remainder["lines"][-1]: [("", receipt, location)]}, report, "receipt_remaining")
+    except ValueError:
+        location = next((i for i, line in enumerate(lines, 1) if line.startswith(inbox._REMAINDER)), 1)
+        report.add("receipt_remaining", receipt, location, "Проверьте отметку оставшихся строк ручного разбора.")
     markers = []
     has_fact = False
     for number, row in enumerate(lines, 1):

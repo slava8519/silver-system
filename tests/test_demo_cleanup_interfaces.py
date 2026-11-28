@@ -1,11 +1,13 @@
 import json
 from http.client import HTTPConnection
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from zipfile import ZipFile
 
 from second_brain import storage
@@ -86,6 +88,61 @@ class CleanupInterfaceTests(unittest.TestCase):
         self.assertTrue(self.cli("--apply", fresh["revision"])["cleaned"])
         self.assertIn("workspace.js", self.request(port, "/"))
         self.assertIn("Моё дополнение.", note.read_text(encoding="utf-8"))
+
+    def test_installed_guide_archives_examples_even_after_an_old_empty_transition(self):
+        port = self.start("demo")
+        source = Path(__file__).resolve().parents[1]
+        runtime = self.root / ".runtime"
+        runtime.mkdir()
+        for name in ("second_brain", "examples", "docs", "plugins"):
+            shutil.copytree(source / name, runtime / name, ignore=shutil.ignore_patterns("__pycache__"))
+        for name in ("README.md", "ROADMAP.md"):
+            shutil.copy2(source / name, runtime / name)
+        shutil.copytree(source / ".agents", self.root / ".agents")
+        preview = self.request(port, "/api/demo-cleanup")
+        self.assertEqual((preview["removeCount"], preview["keepCount"]), (8, 0))
+
+        # A completed transition from the old installer must keep the working
+        # interface. Its empty ZIP and personal files survive the new cleanup.
+        from second_brain import demo_cleanup
+        old_revision = "b" * 64
+        old_zip = f"Archive/DemoCleanup/{old_revision}.zip"
+        (self.root / old_zip).parent.mkdir()
+        with ZipFile(self.root / old_zip, "w"):
+            pass
+        previous = dict(preview, cleaned=True, removeCount=0, keepCount=8,
+                        archive=old_zip, revision=old_revision)
+        receipt = self.root / ".second-brain-demo/cleaned.json"
+        receipt.write_bytes(demo_cleanup._json(previous))
+        self.assertIn("workspace.js", self.request(port, "/"))
+
+        my_note = self.root / "Notes/Личная ссылка.md"
+        my_note.write_text("[[Проба № 3]]", encoding="utf-8")
+        fresh = self.request(port, "/api/demo-cleanup")
+        self.assertEqual((fresh["removeCount"], fresh["keepCount"]), (6, 2))
+        self.assertEqual(self.cli(), fresh)
+        withdraw = demo_cleanup._withdraw
+        withdrawn = []
+        def interrupt(root, revision, name, digest):
+            withdraw(root, revision, name, digest)
+            withdrawn.append(name)
+            raise KeyboardInterrupt
+        with patch.object(demo_cleanup, "_withdraw", side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                demo_cleanup.apply(self.root, fresh["revision"])
+        self.assertFalse((self.root / withdrawn[0]).exists())
+        self.assertEqual(self.cli("--apply", old_revision), previous)
+        self.assertTrue((self.root / withdrawn[0]).is_file())
+        self.assertFalse((receipt.parent / "pending.json").exists())
+        self.assertEqual(self.cli(), fresh)
+        applied = self.request(port, "/api/demo-cleanup", {"revision": fresh["revision"]})
+        self.assertEqual(self.cli("--apply", fresh["revision"])["revision"], fresh["revision"])
+        self.assertTrue(applied["cleaned"])
+        with ZipFile(self.root / applied["archive"]) as archive:
+            self.assertEqual(len(archive.namelist()), 6)
+        self.assertTrue((self.root / old_zip).is_file())
+        self.assertTrue((runtime / "README.md").is_file())
+        self.assertEqual(my_note.read_text(encoding="utf-8"), "[[Проба № 3]]")
 
     def test_ordinary_vault_cannot_be_cleaned_via_http(self):
         storage.initialize(self.root)

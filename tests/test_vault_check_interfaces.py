@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 from second_brain import inbox, storage
 from second_brain.batch import Batch
-from second_brain.vault_check import check_vault
+from second_brain.vault_check import check_after_intake, check_vault
 from second_brain.webserver import server
 
 
@@ -150,6 +150,41 @@ class VaultCheckInterfaces(unittest.TestCase):
                             "--new-person", "Ирина", "--fact", "fact", area, "personal", "1", quote)
         self.assertEqual(saved, repeated)
         self.assertEqual(self.cli("check")["issues"]["total"], 0)
+
+    def test_queue_remaining_from_the_form_then_read_and_finish_from_cli(self):
+        direction = storage.read_record(storage.create(self.root, "direction", "Личное"))["id"]
+        private = "Личное наблюдение."
+        item = self.incoming(private + "\nСверить дату встречи.\nВстреча назначена.")
+        fact = {"kind": "observation", "direction": direction, "visibility": "personal", "line": 1, "text": private}
+        request = {**item, "person": {"new": True, "name": "Ирина"}, "facts": [fact], "remaining": "queue"}
+        saved = self.request("/api/inbox/process", request)
+        args = ("inbox-process", item["path"], "--revision", item["revision"], "--new-person", "Ирина",
+                "--fact", "observation", direction, "personal", "1", private)
+        self.assertEqual(saved, self.cli(*args, "--remaining", "queue"))
+        self.assertTrue(self.request("/api/inbox")["items"][0]["remainingQueued"])
+        self.assertEqual(self.cli("inbox-new")["items"][0]["remainingLines"], 2)
+        source = self.cli("original", item["revision"], "--remaining", "--limit", "1")
+        self.assertEqual((source["lines"], source["nextStart"]), ([{"n": 2, "text": "Сверить дату встречи."}], 3))
+        self.assertNotIn(private, json.dumps(source, ensure_ascii=False))
+        self.assertFalse(self.cli(*args, "--remaining", "finish")["remainingQueued"])
+        self.assertEqual(self.cli("inbox-new")["total"], 0)
+        self.assertEqual(self.cli("check")["status"], "ok")
+
+    def test_damaged_manual_remainder_is_reported_by_source_and_full_checks(self):
+        direction = storage.read_record(storage.create(self.root, "direction", "Личное"))["id"]
+        item = self.incoming("Личная строка.\nОстаток.")
+        saved = self.request("/api/inbox/process", {**item, "person": {"new": True, "name": "Ирина"},
+            "facts": [{"kind": "fact", "direction": direction, "visibility": "personal", "line": 1,
+                       "text": "Личная строка."}], "remaining": "queue"})
+        path = self.root / saved["processedPath"]
+        initial = path.read_text()
+        for broken in ('"lines":[200]', '"lines":"?"'):
+            with self.subTest(broken=broken):
+                path.write_text(initial.replace('"lines":[2]', broken))
+                for check in (check_after_intake(self.root, item["revision"]), self.cli("check", status=1)):
+                    self.assertEqual(check["status"], "issues")
+                    problem, = check["issues"]["items"]
+                    self.assertEqual((problem["code"], problem["path"]), ("receipt_remaining", saved["processedPath"]))
 
     def test_followup_and_idempotent_batch_recheck_the_source(self):
         quote = "Перенесли встречу."

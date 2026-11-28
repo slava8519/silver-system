@@ -11,8 +11,9 @@ from .project_feedback import ProjectFeedback
 from .schedule import schedule_history
 
 
-def _snapshot(record, path):
-    fields = _row_fields(record, all_entries=True)
+def _snapshot(record, path, *, fields=None):
+    if fields is None:
+        fields = _row_fields(record, all_entries=True)
     manual = [("brief", fields["brief"])] if fields["brief"]["manual"] else []
     manual.extend(("latest", entry) for entry in fields["latest"] if entry["manual"])
     decisions = []
@@ -38,6 +39,18 @@ def _snapshot(record, path):
     return token, len(manual), bool(history or last_edit), len(predecessors)
 
 
+def pending_task(record, relative, *, fields=None):
+    token, manual_count, has_history, predecessor_count = _snapshot(record, relative, fields=fields)
+    previous = record.get("gantt_reviewed")
+    dates = {key: record.get(key) for key in ("start", "due", "forecast", "completed")}
+    kind = record.get("task_kind", "task")
+    if (previous or manual_count or has_history or any(dates.values()) or predecessor_count
+            or kind == "milestone") and previous != token:
+        return {"id": record["id"], "title": record["title"], "path": relative,
+                **dates, "manualEntries": manual_count, "kind": kind, "predecessorCount": predecessor_count,
+                "firstReview": previous is None, "token": token}
+
+
 class GanttFeedback:
     def __init__(self, root):
         self.planning = Planning(root)
@@ -56,15 +69,9 @@ class GanttFeedback:
             if members is not None and record["id"] not in members:
                 continue
             relative = path.relative_to(self.planning.root).as_posix()
-            token, manual_count, has_history, predecessor_count = _snapshot(record, relative)
-            previous = record.get("gantt_reviewed")
-            dates = {key: record.get(key) for key in ("start", "due", "forecast", "completed")}
-            kind = record.get("task_kind", "task")
-            if (previous or manual_count or has_history or any(dates.values()) or predecessor_count
-                    or kind == "milestone") and previous != token:
-                yield {"id": record["id"], "title": record["title"], "path": relative,
-                       **dates, "manualEntries": manual_count, "kind": kind, "predecessorCount": predecessor_count,
-                       "firstReview": previous is None, "token": token}
+            pending = pending_task(record, relative)
+            if pending:
+                yield pending
 
     def acknowledge(self, task_id, token):
         if isinstance(token, str) and token.startswith("plan-projects:"):

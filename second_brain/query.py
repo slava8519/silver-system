@@ -1,11 +1,13 @@
 """Read answers and durable, line-level citations from an ordinary Markdown vault."""
 
 import hashlib
+from itertools import islice
 from pathlib import Path
 import re
+import sqlite3
 from urllib.parse import quote
 
-from . import questions, storage
+from . import questions, search_index, storage
 from .search import visible_body_lines
 
 
@@ -22,7 +24,7 @@ def _state_sources(root, path, record):
     if record["type"] != "project":
         return
     raw = record["raw"].splitlines()
-    for field in storage.STATE_FIELDS:
+    for field in storage.PROJECT_EVIDENCE_FIELDS:
         if not record.get(field):
             continue
         number = record["field_lines"][field]
@@ -140,40 +142,112 @@ class WorkspaceQuery:
             if not isinstance(ids, list) or not all(isinstance(i, str) and i for i in ids):
                 raise ValueError("Укажите список ID направлений.")
             selected = set(ids)
+            if self.direction_ids is not None and not selected <= self.direction_ids:
+                raise ValueError("Выбранное направление не входит в доступную область поиска.")
 
+        scope = self.direction_ids if selected is None else selected
+        limit = data.get("limit")
+        if "limit" in data and (type(limit) is not int or not 1 <= limit <= 20):
+            raise ValueError("Количество результатов должно быть от 1 до 20.")
+        # A restricted query must not index bodies outside its scope even on a cold cache.
+        with search_index.optional(self.root, allow_sync=scope is None and self.include_people) as db:
+            if db is not None:
+                try:
+                    return self._scoped_answer(query, scope, selected, db, limit)
+                except sqlite3.DatabaseError:
+                    # A damaged postings table can still have a readable catalogue.
+                    pass
+        return self._scoped_answer(query, scope, selected, None, limit)
+
+    def _scoped_answer(self, query, scope, selected, db, limit):
+        records = (search_index.records(self.root, db, scope=scope) if db is not None
+                   else storage.iter_records(self.root, direction_ids=scope))
         scoped = {}
         directions = set()
-        for path, record in storage.iter_records(self.root):
+        for path, record in records:
             if record["type"] == "direction":
                 directions.add(record["id"])
-            elif self.allows(record) and (selected is None or record["direction"] in selected):
+            elif self.allows(record) and (scope is None or record["direction"] in scope):
                 if record["id"] in scoped:
                     raise ValueError(f"Один ID найден в нескольких файлах: {record['id']}")
                 scoped[record["id"]] = path, record
-        if selected and (not selected <= directions or
-                         self.direction_ids is not None and not selected <= self.direction_ids):
+        if selected and not selected <= directions:
             raise ValueError("Выбранное направление не входит в доступную область поиска.")
-        update_request = questions.project_update_request(query, (record for _, record in scoped.values()))
-        if update_request:
-            limit = data.get("limit", 5)
-            if type(limit) is not int or not 1 <= limit <= 20:
-                raise ValueError("Количество результатов должно быть от 1 до 20.")
-            return self._project_updates(update_request, scoped, limit, allow_state=not questions.asks_for_brief(query))
-        if self.include_people:
-            from .people import People
-            scope = self.direction_ids if selected is None else selected
-            for fact in People(self.root).shared_facts(direction_ids=scope):
-                record = self._fact_record(fact)
-                scoped[record["id"]] = self.root / fact["path"], record
+        return self._answer(query, scoped, scope, db, limit)
 
-        matches, missing = questions.passages(query, [r for _, r in scoped.values()])
-        items = []
-        for record_id, (label, number) in matches.items():
-            path, record = scoped[record_id]
-            if number < record["body_start"]:
-                current = storage.read_record(path, include_raw=True)
+    def _answer(self, query, scoped, scope, db, limit):
+        def load(identifier, *, raw=False):
+            path, record = scoped[identifier]
+            if "body" not in record or (raw and "raw" not in record):
+                current = storage.read_record(storage._inside(self.root, path.relative_to(self.root)), include_raw=raw)
                 if current["revision"] != record["revision"]:
                     raise storage.ConflictError("Карточка изменилась во время ответа. Повторите вопрос.")
+                scoped[identifier] = path, current
+                return current
+            return record
+
+        projects = [r for _, r in scoped.values() if r["type"] == "project"]
+        split = questions.split_update_question(query, projects)
+        if split:
+            results = [self._answer(part, scoped.copy(), scope, db, limit) for part in split]
+            total = sum(result.get("total", len(result["items"])) for result in results)
+            items = [item for result in results for item in result["items"]][:limit]
+            return {"items": items, "total": total, "truncated": total > len(items),
+                    "message": " ".join(r["message"] for r in results if r["message"])}
+
+        field_request = questions.project_field_request(query, projects)
+        if field_request is not None:
+            targets, message = field_request
+            items, gaps = [], []
+            for identifier, label, field in targets:
+                record = load(identifier, raw=True)
+                path, _ = scoped[identifier]
+                source = dict(_state_sources(self.root, path, record)).get(field)
+                if source is None:
+                    gaps.append(f"«{label}» — поле {field} не заполнено.")
+                else:
+                    items.append({"id": identifier, "title": record["title"], "label": label, "supported": True,
+                                  "answer": record[field], "source": source})
+            return {"items": items[:limit], "total": len(items), "truncated": len(items[:limit]) < len(items),
+                    "message": " ".join(filter(None, [message, *gaps]))}
+
+        update_request = questions.project_update_request(query, projects)
+        if update_request:
+            for identifier in update_request[1]:
+                load(identifier)
+            return self._project_updates(update_request, scoped, limit or 5, allow_state=not questions.asks_for_brief(query))
+        if self.include_people:
+            from .people import People
+            facts = search_index.shared_facts(db, scope) if db is not None else People(self.root).shared_facts(direction_ids=scope)
+            for fact in facts:
+                if scope is None or fact["direction"] in scope:
+                    record = self._fact_record(fact)
+                    scoped[record["id"]] = self.root / fact["path"], record
+
+        def candidates(mentions, details, decisions):
+            lines = None
+            if db is not None and not mentions and details:
+                lines = search_index.matching_lines(db, details, scope)
+            for identifier, (_, record) in scoped.items():
+                if mentions and identifier not in mentions:
+                    continue
+                if lines is not None and record["type"] != "person-fact":
+                    if identifier not in lines:
+                        continue
+                    # A recorded decision can inherit its meaning from a section heading.
+                    # Other unnamed subjects are scored solely from matching source lines.
+                    if not decisions:
+                        yield {**record, "candidate_lines": lines[identifier]}
+                        continue
+                yield load(identifier)
+
+        matches, missing = questions.passages(query, [r for _, r in scoped.values()], candidates_for=candidates)
+        items = []
+        for (record_id, number), label in islice(matches.items(), limit):
+            record = load(record_id)
+            path, _ = scoped[record_id]
+            if number < record["body_start"]:
+                current = load(record_id, raw=True)
                 field, source = next((k, s) for k, s in _state_sources(self.root, path, current) if s["start"] == number)
                 answer = current[field]
             else:
@@ -186,7 +260,10 @@ class WorkspaceQuery:
             message = "В выбранных записях не найден фрагмент, подтверждающий ответ."
         elif missing:
             message = "Не найден подтверждающий фрагмент для: " + ", ".join(missing) + "."
-        return {"items": items, "message": message}
+        result = {"items": items, "message": message}
+        if limit is not None:
+            result.update(total=len(matches), truncated=len(matches) > len(items))
+        return result
 
     def open_citation(self, data):
         record_id, number, ref = data.get("id"), data.get("line"), data.get("ref")

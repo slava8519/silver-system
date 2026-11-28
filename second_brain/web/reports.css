@@ -69,6 +69,20 @@
 .report-prose blockquote,.report-source blockquote,.report-source-editor blockquote { border-left: 2px solid #8b9e7d; padding-left: 12px; margin: 6px 0; color: var(--report-secondary); }
 .report-prose pre,.report-raw { background: #f2f3eb; padding: 12px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .report-prose hr { border: 0; border-top: 1px solid var(--report-rule); }
+.record-prose { --report-secondary: var(--muted); --report-rule: var(--work-stroke); max-width: 86ch; line-height: 1.53; }
+.record-prose :is(p,ul,ol) { margin-block: .5em; }
+.record-prose :is(h2,h3,h4,h5,h6) { margin-block: 1em .25em; scroll-margin-block-start: 12px; }
+.record-prose p, .record-prose li, .record-prose blockquote { white-space: normal; }
+.record-prose > :first-child { margin-block-start: 0; }
+.record-prose > :last-child { margin-block-end: 0; }
+.record-prose code { font-size: .91em; background: #f0f2ea; padding: .08em .26em; border-radius: 3px; }
+.markdown-table { max-width: 100%; overflow-x: auto; margin-block: .75em; }
+.markdown-table table { border-collapse: collapse; font-size: .94em; }
+.markdown-table th, .markdown-table td { text-align: start; padding: .35em .75em; border: 1px solid var(--work-stroke); }
+.markdown-table th { background: #f0f3eb; }
+.markdown-task { list-style: none; }
+.markdown-task input { margin-inline-start: -1.35em; }
+.project-updates .record-prose { font-size: 15px; }
 .report-history { margin: 0; padding: 0; list-style: none; max-height: 42vh; overflow-y: auto; }
 .report-history a { display: block; padding-block: 5px; }
 .report-history [aria-current] { font-weight: 700; color: var(--ink); }
@@ -96,19 +110,6 @@
 .report-schedule { margin-top: 14px; padding: 12px 0; }
 .report-schedule summary { color: var(--forest); font-weight: 600; }
 .report-schedule p { font-size: 14px; color: var(--report-secondary); }
-@media (min-width:861px) {
-  .masthead nav:has([data-page=reports]) { gap: clamp(10px,1.6vw,24px); }
-  .masthead-inner:has([data-page=reports]) { gap: clamp(12px,2vw,30px); }
-}
-@media (min-width:861px) and (max-width:990px) {
-  body:not(.workspace-embed) .masthead-inner:has([data-page=reports]) {
-    display: grid; grid-template: "brand tools" auto "navigation navigation" auto / 1fr auto;
-    padding-block: 8px 0; gap: 2px 12px;
-  }
-  .masthead-inner:has([data-page=reports]) .wordmark { grid-area: brand; }
-  .masthead-inner:has([data-page=reports]) .masthead-utilities { grid-area: tools; }
-  .masthead nav:has([data-page=reports]) { grid-area: navigation; justify-content: space-between; min-height: 40px; }
-}
 @media (max-width:740px) {
   .report-reading,.report-prompt { grid-template-columns: minmax(0,1fr); }
   .report-side { position: static; padding: 12px 0 2px; }

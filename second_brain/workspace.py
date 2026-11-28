@@ -2,12 +2,9 @@
 
 import os
 from pathlib import Path
+import unicodedata
 
 from . import storage
-from .okr import KeyResults
-from .people import People
-from .planning import Planning
-from .teams import Teams
 
 
 # Public API spelling and the corresponding user-editable YAML fields.
@@ -39,31 +36,35 @@ class Workspace:
         return context
 
     def overview(self):
+        from .check_records import card_headers
         records = []
         ids = set()
         counts = {}
+        people_count = 0
         for current, directories, _ in os.walk(self.root):
             parent = Path(current)
             directories[:] = [name for name in directories
                               if not name.startswith(".") and not (parent / name).is_symlink()]
             for name in directories:
                 counts[(parent / name).relative_to(self.root).as_posix()] = 0
-        for path, record in storage.iter_records(self.root):
-            if record["id"] in ids:
-                raise ValueError(f"Один ID найден в нескольких файлах: {record['id']}")
-            ids.add(record["id"])
-            records.append(self._summary(path, record))
-        person_paths = [p.relative_to(self.root) for p in People(self.root).card_paths()]
-        team_paths = (p.relative_to(self.root) for p in Teams(self.root).card_paths())
-        work_paths = (p.relative_to(self.root) for p in Planning(self.root).card_paths())
-        okr_paths = (p.relative_to(self.root) for p in KeyResults(self.root).card_paths())
-        for relative in [*(Path(r["path"]) for r in records), *person_paths, *team_paths, *work_paths, *okr_paths]:
-            for directory in relative.parents:
+        for path, record in card_headers(self.root):
+            kind = record["type"]
+            if kind in storage.KINDS or kind in ("person", "team", "task", "plan"):
+                # The three general record types share one lookup namespace.
+                identity = ("record" if kind in storage.KINDS else kind, record["id"])
+                if identity in ids:
+                    raise ValueError(f"Один ID найден в нескольких файлах: {record['id']}")
+                ids.add(identity)
+            if kind in storage.KINDS:
+                records.append(self._summary(path, record))
+            if kind == "person":
+                people_count += 1
+            for directory in path.relative_to(self.root).parents:
                 if directory != Path("."):
                     key = directory.as_posix()
                     counts[key] = counts.get(key, 0) + 1
         folders = [{"path": key, "count": count} for key, count in sorted(counts.items())]
-        return {"name": self.root.name, "records": records, "folders": folders, "peopleCount": len(person_paths)}
+        return {"name": self.root.name, "records": records, "folders": folders, "peopleCount": people_count}
 
     def _detail(self, path, expected_id=None):
         record = storage.read_record(path, include_raw=True)
@@ -89,6 +90,41 @@ class Workspace:
         if not isinstance(record_id, str) or not record_id:
             raise ValueError("Укажите ID записи.")
         return self._detail(storage.find_record(self.root, record_id), record_id)
+
+    def linked_record(self, relative, *, short=False):
+        """Open a card or ordinary Markdown note reached from a link in a reading view."""
+        parts = relative.split("/") if isinstance(relative, str) else []
+        name_only = len(parts) == 1 and short
+        if (not (name_only or len(parts) >= 2 and parts[0] in storage.KINDS.values())
+                or not parts[-1].lower().endswith(".md")
+                or any(not part or part.startswith(".") or "\\" in part or ":" in part
+                       or any(ord(char) < 32 for char in part) for part in parts)):
+            raise ValueError("Укажите путь к Markdown в папке карточек.")
+        path = None if name_only else storage._inside(self.root, Path(*parts))
+        if short and (path is None or not path.exists()):
+            # Obsidian's short filenames may refer to another folder. Never guess
+            # between two notes of the same name.
+            def name_key(name):
+                return unicodedata.normalize("NFC", name).casefold()
+            name = name_key(parts[-1])
+            matches = [p for p in storage.iter_markdown_paths(self.root)
+                       if name_key(p.name) == name and not any(part.startswith(".") for part in p.relative_to(self.root).parts)]
+            if len(matches) > 1:
+                raise ValueError("Найдено несколько файлов с таким именем. Уточните путь в ссылке.")
+            if matches:
+                path = matches[0]
+        if path is None or not path.is_file():
+            raise FileNotFoundError(relative)
+        try:
+            return self._detail(path)
+        except storage.UnmanagedMarkdown:
+            raw = path.read_text(encoding="utf-8")
+            lines = raw.splitlines(keepends=True)
+            start = 0
+            if lines and lines[0].rstrip("\r\n") == "---":
+                start = next((i + 1 for i, line in enumerate(lines[1:], 1) if line.rstrip("\r\n") in ("---", "...")), 0)
+            return {"type": "markdown", "title": path.stem, "path": path.relative_to(self.root).as_posix(),
+                    "raw": raw, "body": "".join(lines[start:])}
 
     def create_record(self, data):
         if data.keys() - (FIELDS.keys() | {"type", "body", "requestId"}):

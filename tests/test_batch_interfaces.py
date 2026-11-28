@@ -103,8 +103,9 @@ class BatchInterfaces(unittest.TestCase):
             lines = self.cli("inbox-read", path)["lines"]
             plan = dict(path=path, revision=digest, actions=[
                 dict(action, line=line["n"], quote=line["text"]) for action, line in zip(actions, lines)])
+            submitted = (self.root / path).read_bytes()
             receipt = self.cli("inbox-apply", data=plan)
-            self.assertEqual((self.root / receipt["source"]["path"]).read_bytes(), (self.root / path).read_bytes())
+            self.assertEqual((self.root / receipt["source"]["path"]).read_bytes(), submitted)
         self.assertEqual(self.cli("inbox-new")["total"], 0)
         self.assertEqual(self.cli("show", projects["Маяк"]["id"], "--brief")["status"], "готов к переключению")
         for name, expected in (("Орбита", "проверить вход"), ("Кедровая серия", "повторить пробу")):

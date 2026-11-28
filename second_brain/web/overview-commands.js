@@ -12,17 +12,21 @@ const requests = [
 
 export function renderOverviewCommands({node, button}, vaultPath) {
   const panel = node("section", "work-panel overview-commands");
-  const heading = node("h2", "work-heading", "Управление вторым мозгом");
+  const heading = node("h2", "work-heading", "Запросы для чата");
   heading.id = "overview-commands-heading";
   panel.setAttribute("aria-labelledby", heading.id);
-  const intro = node("p", "overview-command-intro", "Скопируйте запрос в чат Codex или Claude Code. В текст войдёт путь к этому хранилищу.");
+  const intro = node("p", "overview-command-intro", "Скопируйте запрос с путём к хранилищу в Codex или Claude Code.");
   const list = node("ul", "overview-command-list");
+  const visibleCount = 3;
+  const additional = node("details", "overview-command-more");
+  const extraList = node("ul", "overview-command-list");
+  additional.append(node("summary", "text-link", "Другие запросы · " + (requests.length - visibleCount)), extraList);
   const manual = node("div", "overview-command-manual");
   manual.hidden = true;
   const status = node("p", "overview-command-status");
   status.setAttribute("role", "status");
   status.setAttribute("aria-atomic", "true");
-  panel.append(heading, intro, list, manual, status);
+  panel.append(heading, intro, list, additional, manual, status);
 
   let copying = false;
   let lastCopied;
@@ -87,13 +91,13 @@ export function renderOverviewCommands({node, button}, vaultPath) {
   }
 
   const hasPath = typeof vaultPath === "string" && vaultPath.trim().length > 0;
-  for (const request of requests) {
+  for (const [index, request] of requests.entries()) {
     const row = node("li", "overview-command-row");
     const control = button("Копировать", "overview-command-copy", () => copy(request, control));
     control.setAttribute("aria-label", "Скопировать запрос «" + request + "»");
     control.disabled = !hasPath;
     row.append(node("span", "overview-command-text", request), control);
-    list.append(row);
+    (index < visibleCount ? list : extraList).append(row);
   }
   if (!hasPath) status.textContent = "Обновите страницу, чтобы получить путь к хранилищу.";
   return panel;

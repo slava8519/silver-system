@@ -82,22 +82,14 @@ function directionCard(ui, area) {
 }
 
 export async function mountDirectionStates(panel, ui) {
-  const {node, link, section, button, notice, api} = ui;
-  const title = section("Состояние направлений", "direction-section");
-  const head = node("div", "direction-section-head");
-  const jump = button("К командам ↓", "overview-command-jump", () => {
-    const heading = document.getElementById("overview-commands-heading");
-    heading.tabIndex = -1;
-    heading.focus({preventScroll: true});
-    heading.scrollIntoView({block: "start"});
-  });
-  head.append(title.firstElementChild, jump);
+  const {node, link, button, notice, api} = ui;
+  const title = node("div", "direction-section");
   const list = node("div", "direction-state-list");
   const feedback = node("div", "direction-feedback");
   let offset = 0;
   const more = button("Показать ещё", "button button-secondary", () => load(true));
   more.hidden = true;
-  title.append(head, list, feedback, more);
+  title.append(list, feedback, more);
   panel.append(title);
   async function load(extend) {
     more.disabled = true;

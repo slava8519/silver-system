@@ -208,6 +208,75 @@ class BatchTests(unittest.TestCase):
             self.batch.apply(self.plan(second))
         self.assertNotEqual(self.batch.pending()[0]["revision"], second["revision"])
 
+    def test_manual_selection_queues_only_other_lines_and_uses_archived_version(self):
+        item = self.incoming("Встреча.md", "# Встреча\nЗакрытая заметка Риты.\nКонцерт готов.\nНужен зал.")
+        manual = {"path": item["path"], "revision": item["revision"], "remaining": "queue",
+                  "person": {"new": True, "name": "Рита"},
+                  "facts": [{"kind": "fact", "direction": self.direction, "visibility": "personal",
+                             "line": 2, "text": "Закрытая заметка"}]}
+        first = self.inbox.process(manual)
+        receipt = self.root / first["processedPath"]
+        receipt_bytes = receipt.read_bytes()
+        self.assertTrue(first["remainingQueued"])
+        self.assertEqual(self.inbox.process(manual), first)
+        self.assertEqual(receipt.read_bytes(), receipt_bytes)
+        self.assertEqual(list(People(self.root).shared_facts()), [])
+        path = self.root / item["path"]
+        original = (self.root / first["source"]["path"]).read_bytes()
+        path.write_text("Новая встреча.")
+        partial, new = self.batch.pending()
+        self.assertEqual((partial["status"], partial["remainingLines"], partial["revision"]), ("remaining", 2, item["revision"]))
+        self.assertNotIn("Закрытая заметка", str(partial))
+        page = self.inbox.remaining(item["revision"], limit=1)
+        self.assertEqual((page["lines"], page["nextStart"]), ([{"n": 3, "text": "Концерт готов."}], 4))
+        self.assertEqual(self.inbox.remaining(item["revision"], start=4)["lines"], [{"n": 4, "text": "Нужен зал."}])
+        with self.assertRaises(storage.ConflictError):
+            self.batch.apply(self.plan(partial, self.person_action("Рита", 2, "Закрытая заметка")))
+        self.assertEqual(receipt.read_bytes(), receipt_bytes)
+        plan = self.plan(partial, self.project_action("status", "готов", 3, "Концерт готов"))
+        with patch.object(self.batch, "_step", side_effect=InterruptedError):
+            with self.assertRaises(InterruptedError):
+                self.batch.apply(plan)
+        resume, fresh = self.batch.pending()
+        self.assertEqual((resume["status"], fresh), ("resume", new))
+        saved = self.batch.apply(self.plan(resume))
+        self.assertEqual(saved["applied"][0]["value"], "готов")
+        self.assertEqual([q["line"] for q in saved["triage"]], [4])
+        self.assertNotIn("Закрытая заметка", str(saved))
+        self.assertEqual(self.batch.apply(plan), saved)
+        self.assertEqual(self.batch.pending(), [new])
+        self.assertEqual((self.root / first["source"]["path"]).read_bytes(), original)
+
+    def test_manual_remainder_can_shrink_or_finish_without_reopening_on_retry(self):
+        item = self.incoming("Отчёт.md", "Первый факт.\nВторой факт.\nТретий факт.")
+        fact = {"kind": "fact", "direction": self.direction, "visibility": "shared", "line": 1, "text": "Первый факт"}
+        first = {"path": item["path"], "revision": item["revision"], "remaining": "queue",
+                 "person": {"new": True, "name": "Рита"}, "facts": [fact]}
+        self.inbox.process(first)
+        second = {**first, "facts": [{**fact, "line": 2, "text": "Второй факт"}]}
+        self.assertTrue(self.inbox.process(second)["remainingQueued"])
+        self.assertEqual(self.inbox.remaining(item["revision"])["lines"], [{"n": 3, "text": "Третий факт."}])
+        closed = self.inbox.process({**second, "remaining": "finish"})
+        self.assertFalse(closed["remainingQueued"])
+        self.assertFalse(self.inbox.process(first)["remainingQueued"])
+        self.assertEqual(self.batch.pending(), [])
+        with self.assertRaises(storage.ConflictError):
+            self.batch.apply(self.plan(item))
+
+    def test_inbox_due_before_project_start_leaves_card_unchanged_and_opens_question(self):
+        path = storage.edit(self.root, self.project["id"], self.project["revision"], {"project_start": "2026-12-01"})
+        self.project = storage.read_record(path)
+        before = path.read_bytes()
+        quote = "Согласован срок 2026-11-30."
+        item = self.incoming("Срок.md", quote)
+        action = self.project_action("due", "2026-11-30", 1, quote)
+        result = self.batch.apply(self.plan(item, action))
+        self.assertEqual(result["applied"], [])
+        self.assertEqual(len(result["triage"]), 1)
+        self.assertIn("начало проекта", result["triage"][0]["reason"])
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(self.batch.triage()[0]["id"], result["triage"][0]["id"])
+
     def test_stale_policy_or_manual_project_status_sends_only_conflict_to_owner(self):
         item = self.incoming("Протокол.md", "Проект готов.\nЯна раздаёт билеты.\nМила отвечает за зал.")
         stale = self.person_action("Мила", 3, "Мила отвечает за зал")

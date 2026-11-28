@@ -71,14 +71,18 @@ test("compact sections start on the brief and the selected work can switch to hi
 
 test("task summary and events show labels with safe targets and preserve the Obsidian heading", async () => {
   const href = "../../Notes/%D0%9F%D0%BB%D0%B0%D0%BD%20A.md#%D0%AD%D1%82%D0%B0%D0%BF";
-  const brief = {text: "См. [План A](" + href + ") и [место](#^update)."};
+  const brief = {text: "См. [План A](" + href + ") и [место](#^update). [[Notes/План A#Этап|Тот же этап]]."};
   const invalid = ["../../../outside.md", "%2e%2e/out.md", ".hidden/doc.md", "%2Foutside.md",
     "data:text/html,bad", "//example.com/a.md", "file:///private.md", "a%5Cb.md", "%zz.md"];
   const events = [{text: invalid.map((s,i) => "[запись " + i + "](" + s + ")").join(" ") + " <img src=x> [сайт](https://example.org/x)", date:"2026-11-01"}];
   const panel = render({brief, latest:events, latestTotal:events.length});
   const links = [...panel.all()].filter(n => n.tag === "a");
   const entry = links.find(n => n.textContent === "План A");
-  assert.equal(new URL(entry.href).searchParams.get("path"), root + "/Notes/План A.md#Этап");
+  const params = new URLSearchParams(entry.href.split("?")[1]);
+  assert.match(entry.href, /^#record\?/);
+  assert.equal(params.get("path"), "Notes/План A.md");
+  assert.equal(params.get("section"), "Этап");
+  assert.equal(links.find(n => n.textContent === "Тот же этап").href, entry.href);
   assert.equal(new URL(links.find(n => n.textContent === "место").href).searchParams.get("path"), root + "/" + path + "#^update");
   assert.equal(links.find(n => n.textContent === "сайт").rel, "noopener noreferrer");
   assert.ok(!links.some(n => n.textContent.startsWith("запись")));
@@ -88,7 +92,9 @@ test("task summary and events show labels with safe targets and preserve the Obs
   const sent = [];
   globalThis.window = {parent:{postMessage:(message, origin) => sent.push({message, origin})}};
   try {
-    const embedded = render({brief}, {embedded:true});
+    const full = render({brief}, {embedded:true});
+    assert.equal([...full.all()].find(n => n.textContent === "План A" && n.tag === "a").href, entry.href);
+    const embedded = render({brief}, {embedded:true, compact:true});
     await [...embedded.all()].find(n => n.textContent === "План A" && n.tag === "a").click({preventDefault() {}});
     assert.deepEqual(sent, [{origin:"app://obsidian.md", message:{
       type:"second-brain-open-source", path:"Notes/План A.md", line:null, subpath:"#Этап"
@@ -105,7 +111,7 @@ test("selected task separates readiness from completion and an old snapshot neve
   const snapshot = data => snapshotInspector(ui, {plan, row:{...row, ...data}, root});
   assert.ok(!snapshot({}).textContent.includes("Готовность при закрытии"));
   assert.ok(snapshot({readiness:{...readiness, value:"32.5", kind:"fact"}}).textContent
-    .includes("Готовность при закрытии32,5% · Факт · " + dateText(readiness.date)));
+    .includes("Готовность при закрытии33% · Факт · " + dateText(readiness.date)));
 });
 
 test("task, KR and closed plan open the cited Inbox original in the browser and the bound Obsidian frame", () => {
@@ -232,7 +238,7 @@ test("nested work events load only when expanded and keep task links and evidenc
   const find = (tag, text) => [...nested.all()].find(n => n.tag === tag && n.textContent === text);
   assert.deepEqual(calls,[0]);
   assert.ok(nested.textContent.includes("Цитата из проверки"));
-  assert.equal(new URL(find("a","протокол").href).searchParams.get("path"), root + "/Notes/Check.md");
+  assert.equal(new URLSearchParams(find("a","протокол").href.split("?")[1]).get("path"), "Notes/Check.md");
   find("button",row.title).click();
   assert.deepEqual(chosen,[row.id]);
   await find("button","Показать ещё").click();

@@ -14,6 +14,8 @@ from .storage import id_marker as _receipt_marker, markdown_label as _label, mar
 
 EXTENSIONS = {".md", ".txt"}
 _ARCHIVE_SUFFIX = re.compile(r"\.[a-z0-9]{1,16}\Z")
+_REMAINDER = "<!-- inbox-remaining: "
+_HEADING = re.compile(r"^\s{0,3}#{1,6}(?:\s|$)")
 _TRANSCRIPT_HEADING = re.compile(
     r"# Расшифровка \[исходного вложения\]\(\.\./\.\./Sources/Originals/([0-9a-f]{64})\.[a-z0-9]{1,16}\)")
 KINDS = {"role": "Роль", "fact": "Факт", "observation": "Наблюдение"}
@@ -49,6 +51,37 @@ def _lines(data):
     return text.splitlines()
 
 
+def review_lines(lines):
+    has_body = any(line.strip() and not _HEADING.match(line) for line in lines)
+    return {n for n, line in enumerate(lines, 1) if line.strip() and not (has_body and _HEADING.match(line))}
+
+
+def manual_remainder(raw):
+    """Read the optional line selection; older manual receipts are complete."""
+    if not raw or _REMAINDER.encode() not in raw:
+        return None
+    from .batch import _MARKER, _stored_path
+    markers = [row.decode() for row in raw.splitlines() if row.startswith(_REMAINDER.encode())]
+    if not markers:
+        return None
+    try:
+        marker, = markers
+        state = people._markup(marker, _REMAINDER)
+        if (any(row.startswith(_MARKER.encode()) for row in raw.splitlines())
+                or not _stored_path(state["path"], "Inbox") or Path(state["path"]).suffix.lower() not in EXTENSIONS
+                or not isinstance(state["lines"], list) or not state["lines"]
+                or any(type(n) is not int or n < 1 for n in state["lines"])
+                or sorted(set(state["lines"])) != state["lines"]):
+            raise ValueError
+    except (KeyError, TypeError, ValueError) as error:
+        raise storage.ConflictError("Проверьте отметку оставшихся строк в квитанции разбора.") from error
+    return state
+
+
+def without_remainder(text):
+    return "".join(line for line in text.splitlines(keepends=True) if not line.startswith(_REMAINDER))
+
+
 def _page(lines, start, limit):
     if type(start) is not int or start < 1 or type(limit) is not int or not 1 <= limit <= 80:
         raise ValueError("Укажите первую строку от 1 и количество строк от 1 до 80.")
@@ -67,7 +100,7 @@ class Inbox:
             if not storage._inside(self.root, folder).is_dir():
                 raise ValueError("Сначала подготовьте хранилище командой init.")
 
-    def _incoming(self, name, *, attachments=False):
+    def _incoming(self, name, *, attachments=False, missing_ok=False):
         if not isinstance(name, str) or not name or "\0" in name:
             raise ValueError("Укажите путь к файлу в Inbox.")
         path = Path(name)
@@ -77,7 +110,7 @@ class Inbox:
         if not attachments and path.suffix.lower() not in EXTENSIONS:
             raise ValueError("Для вложения откройте сам файл. Построчный просмотр доступен для Markdown и TXT.")
         file = storage._inside(self.root, path)
-        if not file.is_file():
+        if not file.is_file() and not (missing_ok and not file.exists()):
             raise FileNotFoundError("Входящий файл не найден.")
         return file
 
@@ -142,6 +175,16 @@ class Inbox:
                     continue
                 yield file
 
+    def _review_status(self, digest):
+        receipt = self._receipt(digest)
+        if not receipt.is_file():
+            return {"processed": False}
+        try:
+            queued = manual_remainder(receipt.read_bytes())
+        except (ValueError, OSError):
+            queued = None  # The owner can still open the incoming text; integrity checks explain the receipt.
+        return {"processed": True, **({"remainingQueued": True} if queued else {})}
+
     def list_items(self):
         result = []
         for file in self._files():
@@ -150,7 +193,7 @@ class Inbox:
             except FileNotFoundError:
                 continue
             result.append({"path": file.relative_to(self.root).as_posix(), "size": size,
-                           "processed": self._receipt(digest).is_file(),
+                           **self._review_status(digest),
                            **({"attachment": True} if file.suffix.lower() not in EXTENSIONS else {})})
         return result
 
@@ -159,7 +202,7 @@ class Inbox:
         data = file.read_bytes()
         revision = _digest(data)
         return {"path": file.relative_to(self.root).as_posix(), "revision": revision,
-                "processed": self._receipt(revision).is_file(), **_page(_lines(data), start, limit)}
+                **self._review_status(revision), **_page(_lines(data), start, limit)}
 
     def _facts(self, items, lines):
         if not isinstance(items, list) or not items:
@@ -194,6 +237,15 @@ class Inbox:
             facts[key] = item
         return list(facts.values()), directions
 
+    @staticmethod
+    def _receipt_inbox_path(raw):
+        for line in raw.splitlines()[1:]:
+            if line == b"---":
+                break
+            if line.startswith(b"inbox_path:"):
+                return storage._scalar(line.partition(b":")[2].decode())
+        return None
+
     def _receipt_bytes(self, path, source_id):
         if not path.exists():
             return None
@@ -214,7 +266,7 @@ class Inbox:
             raise storage.ConflictError("Существующий разбор указывает на другой источник.")
         return data
 
-    def _save_receipt(self, path, previous, incoming, source, person, facts, directions):
+    def _save_receipt(self, path, previous, incoming, source, person, facts, directions, old_queue, new_queue):
         base = path.parent
         link_original = _link("Оригинал", self.root / source["path"], base)
         if previous is None:
@@ -237,7 +289,12 @@ class Inbox:
             row = (f'- {name_link} · {KINDS[fact["kind"]]} · {direction} · {VISIBILITY[fact["visibility"]]}'
                    f' · строка {fact["line"]} — {_label(fact["text"])}')
             rows.extend([marker, row])
-        if not rows and previous is not None:
+        if old_queue != new_queue:
+            if old_queue:
+                initial = without_remainder(initial)
+            if new_queue:
+                rows.append(people._marker(_REMAINDER, new_queue))
+        if not rows and previous is not None and old_queue == new_queue:
             return
         newline = "\r\n" if initial.startswith("---\r\n") else "\n"
         prefix = initial if initial.endswith(("\n", "\r")) else initial + newline
@@ -252,26 +309,49 @@ class Inbox:
                 os.replace(staged, path)
 
     def process(self, data):
-        from .vault_check import check_after_intake
-        if not isinstance(data, dict) or data.keys() != {"path", "revision", "person", "facts"}:
+        from .inbox_archive import finish_review
+        required = {"path", "revision", "person", "facts"}
+        if (not isinstance(data, dict) or not required <= data.keys() <= required | {"remaining"}
+                or data.get("remaining", "finish") not in ("queue", "finish")):
             raise ValueError("Передайте входящий файл, его прочитанную версию, участника и фрагменты.")
         with storage._write_lock(self.root):
-            incoming = self._incoming(data["path"])
-            raw = incoming.read_bytes()
+            incoming = self._incoming(data["path"], missing_ok=True)
+            if incoming.exists():
+                raw = incoming.read_bytes()
+            else:
+                # A retry can arrive after the completed source has left Inbox.
+                original = self._original(data["revision"])
+                receipt = self._receipt_bytes(self._receipt(data["revision"]), data["revision"])
+                if not receipt or data["path"] != self._receipt_inbox_path(receipt):
+                    raise FileNotFoundError("Входящий файл не найден.")
+                raw = original.read_bytes()
             digest = _digest(raw)
             if data["revision"] != digest:
                 raise storage.ConflictError("Входящий изменился. Перечитайте файл и снова выберите строки.")
-            result = self._process_person(incoming, raw, digest, data["person"], data["facts"])
-        return {**result, "check": check_after_intake(self.root, digest)}
+            result = self._process_person(incoming, raw, digest, data["person"], data["facts"],
+                                          remaining=data.get("remaining", "finish"))
+        if "remaining" not in data:
+            result.pop("remainingQueued")
+        return {**result, **finish_review(self, data["path"], digest)}
 
-    def _process_person(self, incoming, raw, digest, choice, items):
+    def _process_person(self, incoming, raw, digest, choice, items, *, remaining=None):
         """Import one identity and its evidence under the caller's vault lock."""
-        facts, directions = self._facts(items, _lines(raw))
+        lines = _lines(raw)
+        facts, directions = self._facts(items, lines)
         original = self._original(digest, incoming.suffix.lower())
         if original.exists() and original.read_bytes() != raw:
             raise storage.ConflictError("Содержимое сохранённого оригинала изменилось.")
         receipt = self._receipt(digest)
         previous = self._receipt_bytes(receipt, digest)
+        old_queue = manual_remainder(previous)
+        new_queue = old_queue
+        if remaining == "finish":
+            new_queue = None
+        elif remaining == "queue" and (previous is None or old_queue):
+            candidates = set(old_queue["lines"]) if old_queue else review_lines(lines)
+            candidates.difference_update(f["line"] for f in facts)
+            label = old_queue["path"] if old_queue else incoming.relative_to(self.root).as_posix()
+            new_queue = {"path": label, "lines": sorted(candidates)} if candidates else None
         service = people.People(self.root)
         person_id = people.selected_id(choice, digest)
         completed = set(previous.decode("utf-8").splitlines()) if previous else set()
@@ -291,10 +371,25 @@ class Inbox:
             with storage._staged(original, raw) as staged:
                 os.link(staged, original)
         service.apply(person, source, facts, confirmed_ids=confirmed)
-        self._save_receipt(receipt, previous, incoming, source, person, facts, directions)
+        self._save_receipt(receipt, previous, incoming, source, person, facts, directions, old_queue, new_queue)
         return {"source": source, "processedPath": receipt.relative_to(self.root).as_posix(),
                 "personId": person["id"], "person": {key: person[key] for key in ("id", "name", "path")},
-                "facts": len(facts)}
+                "facts": len(facts), "remainingQueued": bool(new_queue)}
+
+    def remaining(self, source_id, start=1, limit=20):
+        with storage._vault_lock(self.root, write=False):
+            path, lines = self.original_text(source_id)
+            if type(start) is not int or start < 1 or type(limit) is not int or not 1 <= limit <= 80:
+                raise ValueError("Укажите положительный номер строки и размер страницы от 1 до 80.")
+            queue = manual_remainder(self._receipt_bytes(self._receipt(source_id), source_id))
+            if queue is None:
+                raise storage.ConflictError("У этого материала нет оставшихся строк для разбора.")
+            numbers = [n for n in queue["lines"] if n >= start]
+            if numbers and numbers[-1] > len(lines):
+                raise storage.ConflictError("Квитанция указывает на отсутствующую строку оригинала.")
+            return {"path": path.relative_to(self.root).as_posix(), "revision": source_id, "total": len(queue["lines"]),
+                    "lines": [{"n": n, "text": lines[n - 1]} for n in numbers[:limit]],
+                    "nextStart": numbers[limit] if len(numbers) > limit else None}
 
     def original_text(self, source_id):
         """Return the original path and decoded lines after validating the archived bytes."""

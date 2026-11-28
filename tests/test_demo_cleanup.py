@@ -95,6 +95,20 @@ class DemoCleanupTests(unittest.TestCase):
         self.assertEqual(edited.read_text(), "личная правка")
         self.assertFalse(gone.exists())
 
+    def test_personal_references_in_and_next_to_the_installed_program(self):
+        create_examples(self.root)
+        # A folder with the same name can predate installation.
+        self.write(".runtime/docs/guide.md", "[[Проба № 3]]")
+        self.assertEqual(cleanup.preview(self.root)["keepCount"], 2)
+
+        self.write(".runtime/second_brain/__main__.py", "")
+        self.assertEqual(cleanup.preview(self.root)["keepCount"], 0)
+        self.write(".runtime/MyNotes/Закладка.md", "[Проба](../../Notes/Проба%20№%203.md)")
+        plan = cleanup.preview(self.root)
+        self.assertEqual((plan["removeCount"], plan["keepCount"]), (6, 2))
+        cleanup.apply(self.root, plan["revision"])
+        self.assertTrue((self.root / "Notes/Проба № 3.md").exists())
+
     def test_edited_home_and_publication_roots(self):
         create_examples(self.root)
         home = self.root / "Home.md"
@@ -110,7 +124,12 @@ class DemoCleanupTests(unittest.TestCase):
         with self.assertRaises(storage.ConflictError):
             cleanup.apply(self.root, plan["revision"])
         plan = cleanup.preview(self.root)
-        cleanup.apply(self.root, plan["revision"])
+        result = cleanup.apply(self.root, plan["revision"])
+        self.assertTrue(result["cleaned"])
+        self.assertEqual(result["removeCount"], 0)
+        self.assertIsNone(result["archive"])
+        self.assertFalse(list((self.root / "Archive").rglob("*.zip")))
+        self.assertEqual(cleanup.preview(self.root), result)
         self.assertTrue(home.read_text().endswith("Мои дополнительные разделы."))
 
     def test_crash_recovery_and_concurrent_reference(self):
@@ -161,6 +180,11 @@ class DemoCleanupTests(unittest.TestCase):
         cleanup.record_seed(self.root)
         mine = self.root / "Inbox" / "My attachment.bin"
         mine.write_bytes(raw)
+        plan = cleanup.preview(self.root)
+        self.assertEqual((plan["removeCount"], plan["keepCount"]), (1, 3))
+        archive_dir = self.root / "Archive/Inbox"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        mine = mine.rename(archive_dir / mine.name)
         plan = cleanup.preview(self.root)
         self.assertEqual((plan["removeCount"], plan["keepCount"]), (1, 3))
         result = cleanup.apply(self.root, plan["revision"])

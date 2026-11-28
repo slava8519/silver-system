@@ -1,10 +1,11 @@
+import json
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from second_brain import storage
+from second_brain import cycles, storage
 from second_brain.cycles import Cycles
 from second_brain.gantt import Gantt
 from second_brain.planning import Planning
@@ -68,6 +69,29 @@ class WeeklyEvidenceTests(unittest.TestCase):
         result = self.review()
         self.assertEqual([v['kind'] for v in result['facts']], ['snapshot'])
         self.assertTrue(result['warnings'])
+
+    def test_older_sealed_snapshot_without_task_revision_only_uses_frozen_facts(self):
+        self.close()
+        self.event('2026-11-23T12:00:00+00:00', event_date='2026-11-20')
+        path = self.root / self.plan['path']
+        text = path.read_text()
+        row_line = next(line for line in text.splitlines() if cycles._ROW in line)
+        visible, encoded = row_line.rsplit(cycles._ROW, 1)
+        row = json.loads(encoded[:-6])
+        meta_line = next(line for line in text.splitlines() if line.startswith(cycles._META))
+        meta = json.loads(meta_line[len(cycles._META):-4])
+        before = cycles._digest([meta, [row]])
+        del row['revision']
+        legacy = text.replace(before, cycles._digest([meta, [row]])).replace(
+            row_line, visible + cycles._ROW + storage.comment_json(row) + " --> |")
+        path.write_text(legacy)
+        result = self.review()
+        snapshot, = result['facts']
+        self.assertEqual((snapshot['kind'], snapshot['dates']['due']), ('snapshot', '2026-11-25'))
+        warning, = result['warnings']
+        self.assertIn('ревизия', warning['text'])
+        self.assertEqual(warning['sources'], snapshot['sources'])
+        self.assertEqual(path.read_text(), legacy)
 
     def test_unknown_native_change_does_not_restore_removed_managed_event(self):
         self.event('2026-11-21T11:00:00+00:00')

@@ -60,7 +60,7 @@ export function intakeViews(helpers) {
           const row = item.attachment ? node("div", "record-row") : link("", "#inbox?" + paramsFor({path: item.path}), "record-row");
           const copy = node("div", "record-main");
           copy.append(node("strong", "row-title", item.path.split("/").pop()), node("span", "record-path", item.path));
-          const status = item.processed ? "Оригинал сохранён" : "Ожидает разбора";
+          const status = item.remainingQueued ? "Остальные строки ждут Codex" : item.processed ? "Оригинал сохранён" : "Ожидает разбора";
           row.append(node("span", "type-icon " + (item.attachment ? "type-attachment" : "type-note"), item.attachment ? "◇" : "↳"), copy,
             node("span", "record-side", item.attachment ? "Вложение · " + status : status));
           list.append(row);
@@ -134,9 +134,13 @@ export function intakeViews(helpers) {
     feedback.setAttribute("aria-live", "polite");
     const submit = node("button", "button button-primary", "Сохранить разбор");
     submit.type = "submit";
+    const remaining = node("select");
+    remaining.name = "remaining";
+    remaining.append(option("queue", "Оставить остальные строки для Codex"), option("finish", "Завершить разбор материала"));
     const actions = node("div", "work-tools");
     actions.append(submit);
-    form.append(searchRow, candidatesFeedback, labelled("Карточка человека", selector), newName, drafts, empty, feedback, actions);
+    form.append(searchRow, candidatesFeedback, labelled("Карточка человека", selector), newName, drafts, empty,
+      labelled("После сохранения выбранных строк", remaining), feedback, actions);
     const layout = node("div", "intake-layout");
     layout.append(source, form);
     view.append(layout);
@@ -214,7 +218,11 @@ export function intakeViews(helpers) {
           reselect = null;
           feedback.replaceChildren(notice("Материал изменился. Ваши формулировки сохранены в форме. Выберите для каждой строку в новой версии."));
         }
+        const newVersion = revision !== preview.revision;
         revision = preview.revision;
+        remaining.disabled = preview.processed && !preview.remainingQueued;
+        if (remaining.disabled) remaining.value = "finish";
+        else if (newVersion) remaining.value = "queue";
         original.replaceChildren();
         if (preview.processed) original.append(link("Открыть сохранённый оригинал", "/original/" + encodeURIComponent(revision), "text-link"));
         start = next;
@@ -259,9 +267,10 @@ export function intakeViews(helpers) {
       updateSubmit();
       feedback.replaceChildren();
       try {
-        const result = await api("inbox/process", {path, revision, person, facts});
+        const result = await api("inbox/process", {path, revision, person, facts, remaining:remaining.value});
         if (view.isConnected) {
-          lastSave = {id:result.personId, personal:facts.some(f => f.visibility === "personal"), check:result.check};
+          lastSave = {id:result.personId, personal:facts.some(f => f.visibility === "personal"),
+            remainingQueued:result.remainingQueued, check:result.check, archiveIssue:result.archiveIssue};
           go(personURL(result.personId));
         }
       } catch (error) {
@@ -295,6 +304,8 @@ export function intakeViews(helpers) {
     panel.append(list);
     if (lastSave && lastSave.id === id) {
       const status = node("p", "intake-success", lastSave.personal && !personal ? "Разбор сохранён. Личные сведения доступны по кнопке выше." : "Разбор сохранён.");
+      if (lastSave.remainingQueued) status.append(" Остальные строки ждут разбора в Codex.");
+      if (lastSave.archiveIssue) status.append(" Перенос в архив отложен. " + lastSave.archiveIssue.reason);
       status.append(" " + checkSummary(lastSave.check, counted));
       if (lastSave.check.status !== "ok") {
         const first = lastSave.check.issues.items[0];

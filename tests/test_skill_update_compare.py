@@ -1,4 +1,5 @@
 import json
+from hashlib import sha256
 import os
 from pathlib import Path
 import shutil
@@ -59,7 +60,7 @@ class SkillUpdateCompareTests(unittest.TestCase):
         }.items():
             write(self.base, name, content)
         shutil.copytree(self.base, self.target)
-        shutil.copytree(self.base, self.runtime)
+        shutil.copytree(self.base, self.runtime, ignore=shutil.ignore_patterns(".agents"))
         shutil.copytree(self.base / ".agents", self.vault / ".agents")
         write(self.vault, "Home.md", "Custom home")
         write(self.vault, "AGENTS.md", "Vault owner instructions")
@@ -83,7 +84,7 @@ class SkillUpdateCompareTests(unittest.TestCase):
         return {(item["component"], item["path"]): (item["status"], item["action"])
                 for item in report["items"]}
 
-    def test_three_way_comparison_separates_active_and_bundled_copies(self):
+    def test_three_way_comparison_uses_single_active_skill_copy(self):
         write(self.target, SKILL, "New skill instructions")
         write(self.vault, SKILL, PRIVATE)
         write(self.target, "second_brain/new.py", "# added\n")
@@ -92,12 +93,55 @@ class SkillUpdateCompareTests(unittest.TestCase):
         report = self.compare("--limit", "100")
         self.assertTrue(report["baseKnown"])
         changes = self.changes(report)
-        self.assertEqual(changes[("runtime", f".runtime/{SKILL}")], ("upstream", "replace"))
+        self.assertEqual(report["installation"], "recognized")
+        self.assertEqual(report["missingRuntimeParts"], [])
+        self.assertNotIn(("runtime", f".runtime/{SKILL}"), changes)
         self.assertEqual(changes[("skills", SKILL)], ("conflict", "review"))
         self.assertEqual(changes[("runtime", ".runtime/second_brain/records.py")], ("local", "preserve"))
         self.assertEqual(changes[("runtime", ".runtime/second_brain/new.py")], ("upstream", "add"))
         self.assertEqual(changes[("runtime", ".runtime/ROADMAP.md")], ("upstream", "remove"))
         self.assertEqual(report["differenceCount"], len(changes))
+
+    def test_old_runtime_with_a_bundled_copy_is_compared_separately(self):
+        shutil.copytree(self.base / ".agents", self.runtime / ".agents")
+        write(self.target, SKILL, "New release")
+        write(self.vault, SKILL, "Owner version")
+        report = self.compare()
+        self.assertEqual(report["installation"], "recognized")
+        self.assertEqual(self.changes(report), {
+            ("runtime", f".runtime/{SKILL}"): ("upstream", "replace"),
+            ("skills", SKILL): ("conflict", "review"),
+        })
+
+    def test_missing_active_skills_are_reported_in_single_folder_installation(self):
+        shutil.rmtree(self.vault / ".agents")
+        report = self.compare()
+        self.assertEqual((report["installation"], report["components"]["skills"]), ("partial", "missing"))
+        self.assertIn(("skills", SKILL), self.changes(report))
+
+    def test_rewritten_package_links_match_upstream_but_owner_edits_remain_visible(self):
+        files = {}
+        sources = {}
+        for installed_path, source_path in ((".runtime/README.md", "README.md"), (SKILL, SKILL)):
+            source = (self.base / source_path).read_bytes()
+            installed = write(self.vault, installed_path, source.decode() + " (packaged relative link)")
+            files[installed_path] = sha256(installed.read_bytes()).hexdigest()
+            sources[installed_path] = sha256(source).hexdigest()
+        write(self.runtime, "package-manifest.json", json.dumps({"schema_version": 1, "files": files, "source_files": sources}))
+        for known in (True, False):
+            report = self.compare(with_base=known)
+            self.assertEqual((report["installation"], report["differenceCount"]), ("recognized", 0))
+        # Copying raw source over the packaged skill can break its rewritten links.
+        shutil.copy2(self.target / SKILL, self.vault / SKILL)
+        self.assertEqual(self.changes(self.compare()), {("skills", SKILL): ("local", "preserve")})
+        write(self.target, "README.md", "Updated manual")
+        write(self.vault, SKILL, PRIVATE)
+        self.assertEqual(self.changes(self.compare()), {
+            ("runtime", ".runtime/README.md"): ("upstream", "replace"),
+            ("skills", SKILL): ("local", "preserve"),
+        })
+        write(self.target, SKILL, "New skill instructions")
+        self.assertEqual(self.changes(self.compare())[("skills", SKILL)], ("conflict", "review"))
 
     def test_only_installed_plugin_files_are_compared(self):
         write(self.target, f"{PLUGIN}/main.js", "// candidate")
@@ -147,6 +191,23 @@ class SkillUpdateCompareTests(unittest.TestCase):
         self.assertEqual(self.changes(self.compare("--program-dir", str(external))), {
             ("runtime", "second_brain/records.py"): ("upstream", "replace")
         })
+
+    def test_separate_source_checkout_with_its_own_skills_and_no_active_vault_copy(self):
+        external = self.runtime.rename(self.root / "Source checkout")
+        (self.vault / ".agents").rename(external / ".agents")
+        write(self.target, SKILL, "New skill instructions")
+        report = self.compare("--program-dir", str(external))
+        self.assertEqual((report["installation"], report["components"]["skills"]), ("recognized", "missing"))
+        self.assertEqual(self.changes(report), {("runtime", SKILL): ("upstream", "replace")})
+
+    def test_original_program_tree_at_vault_root_counts_each_skill_once(self):
+        for path in self.runtime.iterdir():
+            path.rename(self.vault / path.name)
+        self.runtime.rmdir()
+        write(self.target, SKILL, "New skill instructions")
+        report = self.compare("--program-dir", str(self.vault))
+        self.assertEqual(report["installation"], "recognized")
+        self.assertEqual(self.changes(report), {("skills", SKILL): ("upstream", "replace")})
 
     def test_installed_runtime_cannot_be_the_target_snapshot(self):
         report = self.compare(target=self.runtime, expected_code=2)

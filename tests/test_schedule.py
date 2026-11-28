@@ -104,6 +104,22 @@ class ScheduleTests(unittest.TestCase):
         self.assertTrue(replay["replayed"])
         self.assertEqual(self.schedule.history(self.identifier)[0]["sources"], [ref])
 
+    def test_completion_date_must_be_supported_by_a_checked_quote(self):
+        line = "Работа завершена 21 апреля 2020 года."
+        note = storage.create(self.root, "note", "Приёмка", line)
+        source = {"path": note.relative_to(self.root).as_posix(), "line": storage.read_record(note)["body_start"]}
+        header = note.read_text().removesuffix(line)
+        before = self.path.read_bytes()
+        for text, quote, day in ((line, line, "2020-01-01"), (line, "21 апреля", "2019-04-21"),
+                                 (line, "Работа завершена", "2020-04-21"),
+                                 ("Срок 2020-04-20 или 2020-04-21.", None, "2020-04-20"),
+                                 ("Завершено 4 марта.", None, "2020-03-05")):
+            note.write_text(header + text)
+            with self.subTest(text=text, quote=quote, day=day), self.assertRaisesRegex(ValueError, "датой завершения"):
+                self.put("completed", day, actor="ai", sources=[{**source, "quote": quote or text}])
+            self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(self.put("completed", "2020-03-04", actor="ai", sources=[source])["completed"], "2020-03-04")
+
     def test_replay_after_later_change_and_conflicts(self):
         preview = self.schedule.preview(self.identifier, "forecast", "2020-04-25", actor="ai")
         for field, value, actor in (("forecast", None, "ai"), ("completed", "2020-04-25", "manual"),

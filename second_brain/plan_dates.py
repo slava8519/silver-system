@@ -54,11 +54,7 @@ class Deadlines:
         self.root = self.planning.root
 
     def _preview(self, path, record, header, due):
-        before = validate_due(record.get("due"))
-        if before is None and "due" in record["field_lines"]:
-            raw = header.splitlines()[record["field_lines"]["due"] - 1].decode().partition(":")[2].strip()
-            if raw and not raw.startswith("#") and storage._scalar(raw).lower() not in ("~", "null"):
-                raise ValueError(f"Проверьте значение поля due в {path}.")
+        before = validate_due(storage.editable_scalar(record, header, "due"))
         plans = [{key: plan[key] for key in ("id", "title", "path")}
                  for plan in self.planning.plans_for_task(record["id"])]
         # Membership matters to what the owner previews; unrelated plan text does not.

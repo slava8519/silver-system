@@ -4,7 +4,7 @@ const endpoint = "demo-cleanup";
 
 function openWorkspace(result) {
   // A hash-only navigation would leave the old demo document and its scripts running.
-  const receipt = {archive:result.archive || ""};
+  const receipt = {archive:result.archive, removeCount:result.removeCount, keepCount:result.keepCount};
   history.replaceState({...history.state, cleanupReceipt:receipt}, "", workspaceLink("/#overview", location.href));
   location.reload();
 }
@@ -17,8 +17,12 @@ export function cleanupNotice(node) {
   history.replaceState(state, "", location.href);
   const notice = node("div", "cleanup-receipt");
   notice.setAttribute("role", "status");
-  notice.append(node("strong", "", "Демоданные убраны. Открыто рабочее хранилище."));
-  if (receipt.archive) {
+  notice.append(node("strong", "", "Открыто рабочее хранилище."));
+  if (Number.isSafeInteger(receipt.removeCount) && Number.isSafeInteger(receipt.keepCount)) {
+    notice.append(node("p", "", "Учебных файлов в архиве — " + receipt.removeCount
+      + ". Осталось в хранилище — " + receipt.keepCount + "."));
+  }
+  if (receipt.archive && receipt.removeCount !== 0) {
     const path = node("p", "", "ZIP-архив в хранилище — ");
     path.append(node("code", "", receipt.archive));
     notice.append(path);

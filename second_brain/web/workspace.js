@@ -5,14 +5,35 @@ import { planningView } from "./gantt.js";
 import { activityHelp } from "./activity-help.js";
 import { mountRelationMap } from "./relation-map.js";
 import { relationMapHelp } from "./relation-map-help.js";
+import { recordDocument, recordSection } from "./record-document.js";
 import { projectUpdatesPanel } from "./project-updates.js";
 import { mountDirectionStates } from "./direction-states.js";
+import { mountInboxActivity } from "./inbox-activity.js";
 import { renderOverviewCommands } from "./overview-commands.js";
 import { reportsView } from "./reports.js";
 import { showVaultCheck } from "./vault-check.js";
 
 (() => {
   const main = document.getElementById("content");
+  const sectionPicker = document.querySelector(".section-picker");
+  const navigation = document.getElementById("workspace-nav");
+  const closeNavigation = () => sectionPicker.setAttribute("aria-expanded", "false");
+  sectionPicker.addEventListener("click", () => {
+    const open = sectionPicker.getAttribute("aria-expanded") === "true";
+    sectionPicker.setAttribute("aria-expanded", String(!open));
+  });
+  document.addEventListener("click", event => {
+    if (!sectionPicker.contains(event.target)) closeNavigation();
+  });
+  sectionPicker.parentElement.addEventListener("focusout", event => {
+    if (!event.currentTarget.contains(event.relatedTarget)) closeNavigation();
+  });
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape" && sectionPicker.getAttribute("aria-expanded") === "true") {
+      closeNavigation();
+      sectionPicker.focus();
+    }
+  });
   const query = new URLSearchParams(location.search);
   const compact = query.get("embed") === "1";
   const fullWorkspace = query.get("embed") === "workspace";
@@ -154,15 +175,26 @@ import { showVaultCheck } from "./vault-check.js";
     }
 
     const layout = node("div", "overview-layout");
-    const states = node("div", "overview-states");
+    const primary = node("div", "overview-primary");
+    const arrivals = section("Последние входящие", "work-panel inbox-activity");
+    const states = node("details", "work-panel overview-states");
+    const stateSummary = node("summary", "work-heading", "Состояние направлений");
+    stateSummary.append(node("span", "overview-total", directions.length));
+    states.append(stateSummary);
+    states.addEventListener("toggle", () => {
+      if (states.open && states.childElementCount === 1) {
+        mountDirectionStates(states, {node, link, button, notice, api, recordURL, counted});
+      }
+    });
     const sidebar = node("div", "overview-sidebar");
     const cleanup = node("div", "overview-maintenance");
     cleanup.hidden = true;
     sidebar.append(renderOverviewCommands({node, button}, data.root), folderPanel(), cleanup);
-    layout.append(states, sidebar);
+    primary.append(arrivals, states);
+    layout.append(primary, sidebar);
     main.append(stats, layout);
     await Promise.all([
-      mountDirectionStates(states, {node, link, button, section, notice, api, recordURL, counted}),
+      mountInboxActivity(arrivals, {node, link, button, option, notice, api}),
       mountCleanup(cleanup, api, node)
     ]);
   }
@@ -233,42 +265,28 @@ import { showVaultCheck } from "./vault-check.js";
     return facts;
   }
 
-  function recordBody(record, text) {
-    const body = node("pre", "record-body");
-    if (record.type !== "project") {
-      body.textContent = text;
-      return body;
-    }
-    const toRoot = "../".repeat(record.path.split("/").length - 1);
-    const archiveLink = /\[Источник, строка (\d+)\]\(((?:\.\.\/)+)Sources\/Originals\/([a-f0-9]{64})\.(?:md|txt)\)/g;
-    let start = 0;
-    for (const match of text.matchAll(archiveLink)) {
-      const [, line, folders, digest] = match;
-      if (folders !== toRoot || !Number.isSafeInteger(Number(line)) || Number(line) < 1) continue;
-      body.append(text.slice(start, match.index), link("Оригинал · строка " + line,
-        "/original/" + digest + "?start=" + line, "text-link"));
-      start = match.index + match[0].length;
-    }
-    body.append(text.slice(start));
-    return body;
-  }
-
-  async function recordPage(id, params, version) {
-    const record = await api("record?" + new URLSearchParams({id}));
+  async function recordPage(recordId, params, version) {
+    const selector = recordId ? {id:recordId} : {path:params.get("path"), short:params.get("short") || ""};
+    const record = await api("record?" + new URLSearchParams(selector));
+    const id = record.id;
     if (version !== pageVersion) return;
-    const actions = [link("Показать связи", "#map?" + new URLSearchParams({id}), "text-link"),
+    const actions = record.type === "markdown" ? [] : [link("Показать связи", "#map?" + new URLSearchParams({id}), "text-link"),
       link("Редактировать", "#edit/" + encodeURIComponent(id), "button button-secondary")];
     if (record.type === "project") actions.unshift(link("Гант проекта", "#project-gantt/" + encodeURIComponent(id), "button button-primary"));
-    main.replaceChildren(pageHead(typeNames[record.type] + " · " + record.vaultName, record.title, ...actions));
-    const panel = node("section","work-panel");
+    const header = pageHead((typeNames[record.type] || "Markdown") + " · " + record.vaultName, record.title, ...actions);
+    header.classList.add("record-head");
+    main.replaceChildren(header);
+    const panel = node("section","work-panel record-panel");
+    const meta = node("div", "record-meta");
+    panel.append(meta);
     const areaLine = node("p", "muted");
-    if (record.type !== "direction") {
+    if (record.type !== "direction" && record.type !== "markdown") {
       areaLine.textContent = record.direction ? "Направление · " : "Без направления";
-      panel.append(areaLine);
+      meta.append(areaLine);
     }
-    if (record.aliases?.length) panel.append(node("p","muted","Другие названия · " + record.aliases.join(", ")));
+    if (record.aliases?.length) meta.append(node("p","muted","Другие названия · " + record.aliases.join(", ")));
     if (record.type === "project" && record.projectUpdates) {
-      panel.append(projectUpdatesPanel({node, button, link, notice, api, labelled}, record, () => go(recordURL(id))));
+      panel.append(projectUpdatesPanel({node, button, link, notice, api, labelled, embedded}, record, () => go(recordURL(id))));
     }
     if (record.type === "project") panel.append(recordFacts(record));
     const selectedField = params.get("field");
@@ -279,12 +297,14 @@ import { showVaultCheck } from "./vault-check.js";
         ? requestedLine : null);
     if (outdated) panel.append(notice("Карточка изменилась после открытия обзора. Сверьте новую версию."),
       link("Вернуться к обзору", "#overview", "text-link"));
-    if (fullWorkspace) panel.append(button("Открыть в Obsidian ↗", "button button-secondary",
+    if (fullWorkspace) meta.append(button("Открыть в Obsidian ↗", "intake-action",
       () => openObsidianSource(record.path, selectedLine)));
     if (selectedField && !selectedLine) panel.append(node("p","muted","Поле сейчас не задано."));
     const sourceBox = node("details","record-source");
     sourceBox.open = Boolean(selectedLine);
-    sourceBox.append(node("summary", "text-link", record.path + (selectedLine ? " · строка " + selectedLine : "")));
+    const sourceSummary = node("summary", "text-link", "Исходник" + (selectedLine ? " · строка " + selectedLine : ""));
+    sourceSummary.title = record.path;
+    sourceBox.append(sourceSummary, node("p", "record-path", record.path));
     const lines = node("div", "source-lines");
     function showSource() {
       if (!sourceBox.open || lines.childElementCount) return;
@@ -298,10 +318,10 @@ import { showVaultCheck } from "./vault-check.js";
     showSource();
     sourceBox.addEventListener("toggle", showSource);
     sourceBox.append(lines);
-    panel.append(sourceBox);
+    meta.append(sourceBox);
     const displayBody = record.displayBody?.trimEnd() ?? record.body;
     if (displayBody?.trim()) {
-      const body = recordBody(record, displayBody);
+      const body = recordDocument(record, displayBody, {link, embedded}, {omitTitle:record.title});
       body.hidden = sourceBox.open;
       sourceBox.addEventListener("toggle", () => { body.hidden = sourceBox.open; });
       panel.append(body);
@@ -309,6 +329,11 @@ import { showVaultCheck } from "./vault-check.js";
     if (!record.body && !record.aliases?.length && record.type !== "project") panel.append(node("p","muted","Текст карточки пока пуст."));
     main.append(panel);
     if (selectedLine && requestedLine) lines.querySelector(".highlight")?.scrollIntoView({block: "center"});
+    else if (params.get("section")) {
+      const heading = recordSection(main, params.get("section"));
+      if (heading) heading.scrollIntoView({block:"start"});
+      else meta.append(node("p", "muted", "Раздел «" + params.get("section") + "» не найден."));
+    }
     if (!record.direction && record.type !== "direction") return;
     const mapURL = "#map?" + new URLSearchParams({id});
     if (record.type !== "direction") {
@@ -344,9 +369,13 @@ import { showVaultCheck } from "./vault-check.js";
   }
 
   async function editPage(id, kind, params, version) {
-    let record = id ? await api("record?" + new URLSearchParams({id})) : null;
+    const [context, selected] = await Promise.all([
+      api("workspace/context?directions=1"), id ? api("record?" + new URLSearchParams({id})) : null
+    ]);
     if (version !== pageVersion) return;
-    main.append(pageHead(data.name, record ? "Редактировать карточку" : compact ? "Создать проект" : "Новая карточка"));
+    let record = selected;
+    const directions = context.directions;
+    main.replaceChildren(pageHead(context.name, record ? "Редактировать карточку" : compact ? "Создать проект" : "Новая карточка"));
     const form = node("form","work-panel work-editor");
     const controls = {};
     const type = node("select");
@@ -461,17 +490,29 @@ import { showVaultCheck } from "./vault-check.js";
 
   async function render() {
     const version = ++pageVersion;
-    if (compact && !/^#(?:plans(?:$|\?)|plan\/|project-gantt\/|activity(?:-help)?(?:$|\?)|okr(?:$|[/?])|new\/project(?:$|\?))/.test(location.hash)) history.replaceState(null, "", "#plans");
+    if (/^#plans(?:$|\?)/.test(location.hash)) {
+      const filters = new URLSearchParams(location.hash.split("?")[1]);
+      if (!filters.has("view")) filters.set("view", "plans");
+      history.replaceState(null, "", "#activity?" + filters);
+    }
+    if (compact && !/^#(?:plan\/|project-gantt\/|activity(?:-help)?(?:$|\?)|okr(?:$|[/?])|new\/project(?:$|\?))/.test(location.hash)) history.replaceState(null, "", "#activity?view=plans");
     if (location.hash.split("?")[0] === "#ask") history.replaceState(null, "", "#overview");
     const raw = location.hash.slice(1) || "overview";
     const split = raw.indexOf("?");
     const route = split < 0 ? raw : raw.slice(0,split);
     const params = new URLSearchParams(split < 0 ? "" : raw.slice(split + 1));
     const [page, recordId] = route.split("/");
-    const isActivity = ["activity", "activity-help", "okr", "project-gantt"].includes(page);
-    const isPlan = page === "plans" || page === "plan" || isActivity;
+    const isPlan = ["activity", "activity-help", "okr", "project-gantt", "plan"].includes(page);
     document.body.classList.toggle("gantt-screen", Boolean(recordId) && (page === "plan" || page === "project-gantt"));
-    const nav = page === "check" ? "overview" : page === "map-help" ? "map" : isActivity ? "activity" : isPlan ? "plans" : page === "person" ? "people" : ["new","edit","record"].includes(page) ? "records" : page;
+    const nav = page === "check" ? "overview" : page === "map-help" ? "map" : isPlan ? "activity" : page === "person" ? "people" : ["new","edit","record"].includes(page) ? "records" : page;
+    closeNavigation();
+    const navLinks = navigation.querySelectorAll("[data-page]");
+    const currentLink = Array.from(navLinks).find(a => a.dataset.page === nav) || navLinks[0];
+    for (const a of navLinks) {
+      if (a === currentLink) a.setAttribute("aria-current", "page");
+      else a.removeAttribute("aria-current");
+    }
+    sectionPicker.querySelector(".section-name").textContent = currentLink.textContent;
     main.classList.toggle("planning-main", isPlan);
     main.setAttribute("aria-busy","true");
     try {
@@ -493,9 +534,11 @@ import { showVaultCheck } from "./vault-check.js";
         await mountRelationMap(view, {api, params, node, link, button, pageHead, counted, embedded});
       } else if (page === "activity-help") {
         main.replaceChildren(activityHelp(params));
-      } else if (page === "record" && recordId) {
+      } else if (page === "record" && (recordId || params.has("path"))) {
         main.replaceChildren();
-        await recordPage(decodeURIComponent(recordId), params, version);
+        await recordPage(decodeURIComponent(recordId || ""), params, version);
+      } else if (page === "new" || (page === "edit" && recordId)) {
+        await editPage(page === "edit" ? decodeURIComponent(recordId) : null, recordId, params, version);
       } else if (isPlan) {
         const view = node("div", "planning-view");
         main.replaceChildren(view);
@@ -517,15 +560,9 @@ import { showVaultCheck } from "./vault-check.js";
         directions = data.records.filter(r => r.type === "direction");
         main.replaceChildren();
         if (page === "records") recordsPage(params);
-        else if (page === "edit" && recordId) await editPage(decodeURIComponent(recordId),null,params,version);
-        else if (page === "new") await editPage(null,recordId,params,version);
         else await overview();
       }
       if (version !== pageVersion) return;
-      document.querySelectorAll("[data-page]").forEach(a => {
-        if (a.dataset.page === nav || (nav === "" && a.dataset.page === "overview")) a.setAttribute("aria-current","page");
-        else a.removeAttribute("aria-current");
-      });
       document.title = (main.querySelector("h1")?.textContent || "Хранилище") + " · Второй мозг";
     } catch (error) {
       if (version === pageVersion) {

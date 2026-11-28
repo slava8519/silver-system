@@ -30,8 +30,10 @@ _SCOPES = {
 }
 
 
-def _paths(root, report):
+def _paths(root, report=None):
     def unreadable(path):
+        if report is None:
+            raise OSError(f"Не удалось прочитать раздел карточек: {path}")
         report.unreadable("record.unreadable", path, 0, "Не удалось прочитать раздел карточек.")
 
     for folder in _FOLDERS:
@@ -56,6 +58,22 @@ def _paths(root, report):
                         yield path
         except (ValueError, OSError):
             unreadable(start)
+
+
+def _in_scope(root, path, kind):
+    return any(root / folder in path.parents for folder in _SCOPES[kind])
+
+
+def card_headers(root):
+    """Read just the frontmatter of cards in the same folders used by the integrity check."""
+    for path in _paths(root):
+        header = storage.read_header(path)
+        try:
+            record, _ = storage._parse_record(path, header, kinds=_SCOPES)
+        except storage.UnmanagedMarkdown:
+            continue
+        if _in_scope(root, path, record["type"]):
+            yield path, record
 
 
 def _kind(data):
@@ -146,6 +164,7 @@ def _body_links(record, path, report):
             report.add("record.date", path, record["field_lines"]["due"], "Согласованный срок раньше начала работы.")
         gantt._row_fields(record, all_entries=True)
         schedule_history(record, path)
+        okr_progress._readings(record)
     elif kind == "report_issue":
         reports.issue_content(record)
     elif kind == "person":
@@ -198,6 +217,8 @@ def check_records(root, report):
     """Inspect every declared card; retain only identities and link coordinates between files."""
     identities = defaultdict(list)
     links = []
+    template_versions = {}
+    issue_templates = []
     checked = 0
     for path in _paths(root, report):
         try:
@@ -221,7 +242,7 @@ def check_records(root, report):
             report.add("record.header", path, line, message)
             continue
         checked += 1
-        if not any(root / folder in path.parents for folder in _SCOPES[kind]):
+        if not _in_scope(root, path, kind):
             report.add("record.location", path, record["field_lines"]["type"],
                        "Такую карточку приложение ищет в " + " / ".join(_SCOPES[kind]) + ".")
             continue
@@ -232,10 +253,15 @@ def check_records(root, report):
                 expected = reports._template_path(root, identifier, record.get("version"))
                 if path != expected:
                     raise ValueError("Путь версии шаблона.")
+                template_versions[(identifier, record["version"])] = record["revision"]
             except ValueError:
                 report.add("record.template_version", path, record["field_lines"].get("version", 1),
                            "Проверьте ID, номер версии шаблона и имя его файла.")
             continue
+        if kind == "report_issue":
+            issue_templates.append((path, record["field_lines"].get("template_version", 1),
+                                    (record.get("template_id"), record.get("template_version")),
+                                    record.get("template_revision")))
         identities[identifier].append((path, record["field_lines"]["id"], kind))
         report.record_id(kind, identifier)
         for field, target in _REFS.get(kind, {}).items():
@@ -253,6 +279,12 @@ def check_records(root, report):
             line = int(coordinate[1]) if coordinate else min(record["body_start"], len(data.splitlines()))
             report.add("record.structure", path, line, "Проверьте служебные разделы и разметку в теле карточки.")
     _owner(root, report, links)
+    for path, line, template, expected_revision in issue_templates:
+        revision = template_versions.get(template)
+        if revision is None:
+            report.add("record.template_version", path, line, "Не найдена сохранённая версия шаблона выпуска.")
+        elif expected_revision and expected_revision != revision:
+            report.add("record.template_version", path, line, "Содержимое сохранённой версии шаблона изменилось.")
     for entries in identities.values():
         if len(entries) < 2:
             continue

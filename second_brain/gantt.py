@@ -11,7 +11,7 @@ from . import storage
 from .evidence import linked_source, require_event_date, verify_sources
 from .markdown_sections import fenced_lines
 from .planning import Planning, TASK_SCALARS, validate_due
-from .schedule import schedule_history
+from .schedule import _current_field, schedule_history
 
 
 _HEADINGS = {"brief": "Коротко", "latest": "Последнее"}
@@ -275,10 +275,14 @@ class Gantt:
                 due = validate_due(record.get("due"))
                 if start and due and start > due:
                     raise ValueError("Начало задачи позже её срока.")
-                if start == record.get("start"):
+                previous_start = record.get("start")
+                if previous_start is None:
+                    # The reader also returns None for opaque, owner-defined YAML values.
+                    _current_field(record, header, "start")
+                if start == previous_start:
                     return current
                 header = storage._patch_header(header, record, {"start": start})
-                change = {"before": record.get("start"), "after": start}
+                change = {"before": previous_start, "after": start}
             else:
                 change = write_entry(self.root, path, data, lines, newline, updated, accepted_manual_revision)
             if change is None:

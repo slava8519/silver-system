@@ -100,9 +100,12 @@ test("Forecast, actual and baseline date produce an interval when no due date is
   assert.equal(scheduleMarks({baseline:"2026-11-10"},november)[0].kind, "baseline");
 });
 
-test("Readiness distinguishes zero and unknown, keeps fractional estimates and clips the filled part", () => {
-  assert.equal(progressText("66.775"),"66,775%");
+test("Readiness labels round to whole percentages while bars retain the recorded fraction", () => {
+  assert.equal(progressText("62.04"),"62%");
+  assert.equal(progressText("50.5"),"51%");
+  assert.equal(progressValue("50.5"),50.5);
   assert.equal(progressText("0"),"0%");
+  assert.equal(progressText(null),"—");
   for (const value of [null,undefined,"",false,Infinity,-1,"101"]) assert.equal(progressValue(value),null);
   const zoom={start:dayOf("2026-11-06"),size:10};
   assert.equal(visibleFill("2026-11-01","2026-11-20",zoom,50),50);
@@ -147,4 +150,11 @@ test("week labels in December and January stay within their month without touchi
     }
     assert.ok(sides.includes("after"));
   }
+});
+
+test("ticks share one line with the date cursor and reclaim its space when hidden", () => {
+  const marks = [0, .3, .55, .8].map(at => ({at}));
+  const widths = [20, 20, 20, 20];
+  assert.deepEqual(tickAlignments(marks, [], 200, widths), ["after", "after", "after", "after"]);
+  assert.deepEqual(tickAlignments(marks, [], 200, widths, [70, 125]), ["after", "before", "hidden", "after"]);
 });

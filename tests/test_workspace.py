@@ -106,6 +106,23 @@ class WorkspaceTests(unittest.TestCase):
             self.space.create_record({**data, "title": "Другой запрос"})
         self.assertEqual(len(self.space.overview()["records"]), 1)
 
+    def test_complex_project_fields_are_preserved_on_assignment_and_clear(self):
+        project = self.space.create_record({"type": "project", "title": "Проверка"})
+        path = self.root / project["path"]
+        for field, yaml, value in (("status", "status: {stage: review, owner: Anna}", "done"),
+                                   ("nextStep", "next_step:\n- ручная запись", "обсудить"),
+                                   ("projectStart", "project_start: [начало, весна]", "2026-04-01")):
+            raw = project["raw"].replace("aliases: []", "aliases: []\n" + yaml)
+            path.write_text(raw)
+            current = self.space.get_record(project["id"])
+            self.assertIsNone(current[field])
+            for replacement in (value, None):
+                with self.subTest(field=field, replacement=replacement), self.assertRaisesRegex(ValueError, "Markdown"):
+                    self.space.edit_record({"id": project["id"], "revision": current["revision"], field: replacement})
+                self.assertEqual(path.read_bytes(), raw.encode())
+            saved = self.space.edit_record({"id": project["id"], "revision": current["revision"], "body": "Уточнение"})
+            self.assertIn(yaml, saved["raw"])
+
     def test_invalid_edits_preserve_the_original_file(self):
         card = self.space.create_record({"type": "note", "title": "Афиша"})
         for edit in ({"direction": card["id"]}, {"title": "  "}, {"aliases": "алиас"},

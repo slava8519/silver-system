@@ -22,12 +22,3 @@
   overflow-wrap: anywhere;
   user-select: text;
 }
-.second-brain-admin-controls {
-  display: flex;
-  flex: 0 0 auto;
-  flex-wrap: wrap;
-  gap: var(--size-4-2);
-  justify-content: flex-end;
-  padding: var(--size-4-2);
-  border-bottom: 1px solid var(--background-modifier-border);
-}

@@ -39,9 +39,9 @@ export function capturePanel({node, button, section, labelled, notice, api}, onS
   form.append(labelled("Название (необязательно)", title), labelled("Текст", text), save, feedback);
   textPanel.append(form);
 
-  function receipt(path) {
+  function receipt(saved) {
     const line = node("p", "capture-receipt");
-    line.append("Сохранено: ", node("code", "", path));
+    line.append(saved.alreadyProcessed ? "Уже разобрано · " : "Сохранено · ", node("code", "", saved.path));
     return line;
   }
 
@@ -59,7 +59,7 @@ export function capturePanel({node, button, section, labelled, notice, api}, onS
     try {
       const saved = await api("inbox/text", {text: text.value, ...(title.value.trim() ? {title: title.value.trim()} : {})});
       form.reset();
-      feedback.append(receipt(saved.path));
+      feedback.append(receipt(saved));
       if (grid.isConnected) await onSaved();
     } catch (error) {
       feedback.append(notice(error.message));
@@ -91,7 +91,7 @@ export function capturePanel({node, button, section, labelled, notice, api}, onS
     }
     try {
       const result = await api("inbox/file?" + new URLSearchParams({name: file.name}), file);
-      row.replaceChildren(receipt(result.path));
+      row.replaceChildren(receipt(result));
     } catch (error) {
       row.replaceChildren(notice(file.name + " — " + error.message),
         button("Повторить загрузку", "intake-action", async () => {

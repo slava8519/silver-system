@@ -10,7 +10,8 @@ test("independent views of outcome, criterion fulfilment and weighted work compl
   assert.equal(reading(kr),"0 мин");
   assert.equal(threshold(kr),"≤ 15 мин");
   assert.equal(checks(kr),"1 из 2");
-  assert.equal(readiness(kr.progress),"80 %");
+  assert.equal(readiness(kr.progress),"80%");
+  assert.equal(readiness({value:"70.6"}),"71%");
   assert.equal(readiness({value:null}),"—");
 });
 

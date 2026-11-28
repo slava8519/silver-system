@@ -64,7 +64,7 @@ def _receipts(root, issues):
     folder = storage._inside(root, "Sources/Processed")
     if not folder.is_dir():
         return grouped
-    for digest, jobs, questions in Batch(root)._receipts():
+    for digest, jobs, questions, _ in Batch(root)._receipts():
         if any(q.get("status") == "damaged" for q in questions.values()):
             issues.append({"path": f"Sources/Processed/{digest}.md", "reason": "Повреждена квитанция разбора."})
             continue

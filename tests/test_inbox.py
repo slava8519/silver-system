@@ -67,16 +67,19 @@ class InboxTests(unittest.TestCase):
         self.assertEqual(first, again)
         original = self.root / first["source"]["path"]
         self.assertEqual(original.read_bytes(), self.content)
-        self.assertEqual(self.path.read_bytes(), self.content)
+        named = self.root / "Archive/Inbox" / self.path.name
+        self.assertEqual(named.read_bytes(), self.content)
+        self.assertFalse(self.path.exists())
         receipt = self.root / first["processedPath"]
         before = receipt.read_bytes()
-        new_name = self.path.rename(self.path.with_name("Перенесено.txt"))
+        new_name = self.path.with_name("Перенесено.txt")
+        new_name.write_bytes(named.read_bytes())
         moved = {**self.request, "path": "Inbox/" + new_name.name}
         self.assertEqual(self.inbox.process(moved), first)
         self.assertEqual(before, receipt.read_bytes())
         self.assertEqual(len(list(original.parent.iterdir())), 1)
         self.assertEqual(len(list(receipt.parent.iterdir())), 1)
-        self.assertTrue(self.inbox.list_items()[0]["processed"])
+        self.assertEqual(self.inbox.list_items(), [])
         new_name.write_bytes(self.content + b"\n")
         self.assertFalse(self.inbox.list_items()[0]["processed"])
         with self.assertRaises(storage.ConflictError):
@@ -110,11 +113,12 @@ class InboxTests(unittest.TestCase):
             self.inbox.fact_evidence(result["personId"], private["id"])
         self.assertEqual(self.inbox.fact_evidence(result["personId"], private["id"], personal=True)["text"],
                          "закрытый факт")
-        self.path.rename(self.path.with_name("Moved.txt"))
+        named = self.root / "Archive/Inbox" / self.path.name
+        named.rename(named.with_name("Moved.txt"))
         saved = self.inbox.original(result["source"]["id"], start=2, limit=1)
         self.assertEqual(saved["revision"], self.request["revision"])
         self.assertEqual(saved["lines"], [{"n": 2, "text": self.content.decode("utf-8-sig").splitlines()[1]}])
-        self.path.with_name("Moved.txt").rename(self.path)
+        named.with_name("Moved.txt").rename(named)
         original = self.root / result["source"]["path"]
         original.write_bytes(original.read_bytes() + b"\n")
         with self.assertRaises(storage.ConflictError):

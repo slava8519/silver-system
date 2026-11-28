@@ -70,36 +70,48 @@ class Planning:
         if not self.root.is_dir() or not any((self.root / folder).is_dir() for folder in storage.KINDS.values()):
             raise ValueError("Укажите существующее хранилище. Для новой папки сначала выполните init.")
 
-    def _entries(self, kind):
+    def _entries(self, kind, identifiers=None):
         with storage._vault_lock(self.root, write=False):
-            rows = list(self._read_entries(kind))
+            rows = list(self._read_entries(kind, identifiers))
         yield from rows
 
-    def _read_entries(self, kind):
+    def _read_entries(self, kind, identifiers=None):
         from .plan_transaction import previous_versions
         pending = previous_versions(self.root) if kind == "task" else {}
         seen = set()
+        fields = TASK_SCALARS if kind == "task" else (CYCLE_SEAL,)
         for path in storage.iter_markdown_paths(self.root, folders=(FOLDERS[kind],)):
-            data = path.read_bytes()
-            if path in pending:
-                before, after_hash = pending[path]
-                if hashlib.sha256(data).hexdigest() == after_hash:
-                    data = before
             try:
-                record, header = storage._parse_record(path, data, kinds=(kind,),
-                                                       optional_scalars=TASK_SCALARS if kind == "task" else (CYCLE_SEAL,))
+                if identifiers is not None and path not in pending:
+                    # Every header participates in the ID check; only selected bodies supply revisions.
+                    with path.open("rb") as stream:
+                        header = storage.read_header_from(stream)
+                        record, _ = storage._parse_record(path, header, kinds=(kind,), optional_scalars=fields)
+                        data = None
+                        if record["id"] in identifiers:
+                            body = stream.read()
+                            data = header + body
+                            record.update(storage._record_content(data, body))
+                else:
+                    data = path.read_bytes()
+                    if path in pending:
+                        before, after_hash = pending[path]
+                        if hashlib.sha256(data).hexdigest() == after_hash:
+                            data = before
+                    record, header = storage._parse_record(path, data, kinds=(kind,), optional_scalars=fields)
             except storage.UnmanagedMarkdown:
                 continue
             identifier = record["id"]
             if identifier in seen:
                 raise ValueError(f"Один ID найден в нескольких файлах: {identifier}")
             seen.add(identifier)
-            yield path, data, record, header
+            if identifiers is None or identifier in identifiers:
+                yield path, data, record, header
 
     def _find(self, kind, identifier):
         if not isinstance(identifier, str) or not identifier.strip():
             raise ValueError("Укажите ID карточки.")
-        matches = [row for row in self._entries(kind) if row[2]["id"] == identifier]
+        matches = list(self._entries(kind, {identifier}))
         if not matches:
             raise FileNotFoundError(f"Карточка не найдена: {identifier}")
         return matches[0]
@@ -171,8 +183,7 @@ class Planning:
             memberships = []
             for path, record, closed in plans:
                 if closed is None:
-                    direct, _ = _membership(record["body"])
-                    members = list(dict.fromkeys([*direct, *linked.get(record["id"], ())]))
+                    members = self.member_ids(record, linked.get(record["id"], ()))
                 elif include_closed:
                     members = [row["id"] for row in frozen_rows(record, closed)]
                 else:
@@ -180,6 +191,14 @@ class Planning:
                 summary = self._summary(path, record) if closed is None else self._plan_summary(path, record, closed)
                 memberships.append((summary, members))
         yield from memberships
+
+    def member_ids(self, plan, linked_task_ids=None):
+        """Stable order and unique identities shared by the active plan views."""
+        direct, _ = _membership(plan["body"])
+        if linked_task_ids is None:
+            from .okr import KeyResults
+            linked_task_ids = KeyResults(self.root).plan_task_ids({plan["id"]}).get(plan["id"], ())
+        return list(dict.fromkeys([*direct, *linked_task_ids]))
 
     def view(self, plan_id):
         with storage._vault_lock(self.root, write=False):
@@ -196,17 +215,12 @@ class Planning:
             if closed.get("includedProjects"):
                 result["includedProjectCount"] = len(closed["includedProjects"])
             return result
-        ids, _ = _membership(plan["body"])
-        if linked_task_ids is None:
-            from .okr import KeyResults
-            linked_task_ids = KeyResults(self.root).plan_task_ids({plan["id"]}).get(plan["id"], ())
-        ids = list(dict.fromkeys([*ids, *linked_task_ids]))
+        ids = self.member_ids(plan, linked_task_ids)
         if not ids:
             return {**result, "items": []}
         if tasks_by_id is None:
             needed = set(ids)
-            selected = {record["id"]: (p, record, header) for p, _, record, header in self._entries("task")
-                        if record["id"] in needed}
+            selected = {record["id"]: (p, record, header) for p, _, record, header in self._entries("task", needed)}
         else:
             selected = {key: tasks_by_id[key] for key in ids if key in tasks_by_id}
         directions = project_directions

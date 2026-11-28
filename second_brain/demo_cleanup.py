@@ -79,7 +79,8 @@ def _eligible(name):
         return False
     parts = name.split("/")
     return (all(part and not part.startswith(".") for part in parts)
-            and (name == "Home.md" or len(parts) >= 2 and parts[0] in _FOLDERS)
+            and (name == "Home.md" or len(parts) >= 2 and parts[0] in _FOLDERS
+                 or len(parts) > 2 and parts[:2] == ["Archive", "Inbox"])
             and parts[:2] != ["Settings", "Demo"])
 
 
@@ -96,8 +97,17 @@ def _walk(root):
     def failed(error):
         raise error
 
+    runtime = root / ".runtime"
+    entry = runtime / "second_brain" / "__main__.py"
+    installed = not any(path.is_symlink() for path in (runtime, entry.parent, entry)) and entry.is_file()
     for directory, directories, files in os.walk(root, onerror=failed):
         base = Path(directory)
+        # Only the shipped program and its own documentation can contain
+        # unconditional sample links. Custom files still protect owner references.
+        if installed and base == runtime:
+            directories[:] = [d for d in directories if d not in {"second_brain", "examples", "docs", "plugins", ".agents"}
+                              or (base / d).is_symlink()]
+            files = [name for name in files if name not in {"README.md", "ROADMAP.md"} or (base / name).is_symlink()]
         directories[:] = sorted(d for d in directories if d not in {".git", ".obsidian", ".trash"}
                                 and (base / d).relative_to(root).as_posix() not in
                                 {_ARCHIVE, _CONTROL, ".second-brain"})
@@ -162,6 +172,22 @@ def _seed(root):
         ids = manifest.get("ids", {})
         if not isinstance(ids, dict) or any(k not in entries or not isinstance(v, str) for k, v in ids.items()):
             raise ValueError("Повреждены идентификаторы учебных файлов.")
+        # Old generators recorded completed examples at their former Inbox
+        # paths. Recognize a later standard archive move only when the seed
+        # also proves that this exact material already had a receipt.
+        for name, digest in list(entries.items()):
+            if (not name.startswith("Inbox/") or "Sources/Processed/" + digest + ".md" not in entries
+                    or os.path.lexists(root / name)):
+                continue
+            archived = "Archive/" + name
+            try:
+                target = _file(root, archived)
+            except ValueError:
+                continue  # An owner's symlink is never a generated archive move.
+            if archived not in entries and target.is_file() and _file_hash(target) == digest:
+                entries[archived] = entries.pop(name)
+                if name in ids:
+                    ids[archived] = ids.pop(name)
         return entries, ids
     from .legacy_examples import legacy_seed
     return _entries(legacy_seed(root) or {}), {}
@@ -230,7 +256,7 @@ def _plan(root, seed=None, withdrawn=None):
             if name in entries:
                 changed.add(name)
             continue
-        incoming = name.startswith("Inbox/")
+        incoming = name.startswith(("Inbox/", "Archive/Inbox/"))
         if path.suffix.lower() not in _TEXT and name not in entries and not incoming:
             continue
         safe_path = _file(root, path.relative_to(root))
@@ -284,9 +310,14 @@ def _plan(root, seed=None, withdrawn=None):
 
 def _receipt(root):
     result = _control(root, "cleaned")
-    if result is not None and (not isinstance(result, dict) or result.get("cleaned") is not True
-                               or not _DIGEST.fullmatch(str(result.get("revision", "")))
-                               or result.get("archive") != f"{_ARCHIVE}/{result['revision']}.zip"):
+    if result is None:
+        return None
+    if (not isinstance(result, dict) or result.get("cleaned") is not True
+            or not _DIGEST.fullmatch(str(result.get("revision", "")))):
+        raise ValueError("Повреждена квитанция очистки демоданных.")
+    expected_archive = (None if result.get("version") == 2 and result.get("removeCount") == 0
+                        else f"{_ARCHIVE}/{result['revision']}.zip")
+    if result.get("archive") != expected_archive:
         raise ValueError("Повреждена квитанция очистки демоданных.")
     return result
 
@@ -294,6 +325,13 @@ def _receipt(root):
 def is_cleaned(root):
     root = Path(root)
     return root.is_dir() and _receipt(_root(root)) is not None
+
+
+def _legacy_empty_archive(root, receipt):
+    # The original one-folder installer made examples referenced by its own manual
+    # appear user-owned. Keep the working interface while allowing a fresh preview.
+    return (receipt.get("version", 1) == 1 and receipt.get("removeCount") == 0
+            and receipt.get("keepCount", 0) > 0 and (root / ".runtime").is_dir())
 
 
 def _pending(root):
@@ -312,10 +350,13 @@ def preview(root):
     root = _root(root)
     with storage._vault_lock(root, write=False):
         result = _receipt(root)
-        if result is not None:
+        if result is not None and not _legacy_empty_archive(root, result):
             return result
         journal = _pending(root)
-        return journal["preview"] if journal is not None else _plan(root)[0]
+        if journal is not None and (result is None or journal["preview"]["revision"] != result["revision"]):
+            return journal["preview"]
+        plan = _plan(root)[0]
+        return result if result is not None and not plan["removeCount"] else plan
 
 
 def _held(root, revision, name):
@@ -446,26 +487,32 @@ def apply(root, revision):
     if not isinstance(revision, str) or not _DIGEST.fullmatch(revision):
         raise ValueError("Сначала просмотрите состав учебных данных.")
     with storage._write_lock(root):
-        result = _receipt(root)
-        if result is not None:
-            if result["revision"] != revision:
-                raise storage.ConflictError("Эта версия очистки уже не актуальна.")
-            journal = _pending(root)
-            if journal is not None and journal["preview"]["revision"] == revision:
-                _finish(root, journal)
-            return result
+        previous = _receipt(root)
         journal = _pending(root)
         if journal is not None:
-            _restore(root, journal)
+            if previous is not None and journal["preview"]["revision"] == previous["revision"]:
+                _finish(root, journal)
+            else:
+                _restore(root, journal)
+        if previous is not None:
+            if previous["revision"] == revision:
+                return previous
+            if not _legacy_empty_archive(root, previous):
+                raise storage.ConflictError("Эта версия очистки уже не актуальна.")
         seed = _seed(root)
         report, files = _plan(root, seed)
-        if not report["available"] or revision != report["revision"]:
+        if not report["available"] or revision != report["revision"] or (previous is not None and not files):
             raise storage.ConflictError("Состав хранилища изменился. Повторите просмотр.")
+        receipt_path = _file(root, f"{_CONTROL}/cleaned.json")
+        if not files:
+            result = dict(report, version=2, cleaned=True, archive=None)
+            _publish(receipt_path, _json(result))
+            return result
         archive = _backup(root, revision, files)
         journal = {"preview": report, "files": files}
         pending = _file(root, f"{_CONTROL}/pending.json")
         _publish(pending, _json(journal))
-        result = dict(report, cleaned=True, archive=archive)
+        result = dict(report, version=2, cleaned=True, archive=archive)
         try:
             for name, digest in files.items():
                 _withdraw(root, revision, name, digest)
@@ -473,7 +520,7 @@ def apply(root, revision):
             if confirmed["revision"] != revision:
                 raise storage.ConflictError("Состав хранилища изменился во время очистки.")
             _verify_archive(root, archive, files, withdrawn=revision)
-            _publish(_file(root, f"{_CONTROL}/cleaned.json"), _json(result))
+            storage.replace_bytes(receipt_path, _json(previous) if previous is not None else None, _json(result))
         except Exception:
             _restore(root, journal)
             raise

@@ -33,10 +33,14 @@ def command_line():
     overview = commands.add_parser("overview", help="показать состав и записанное состояние хранилища")
     overview.add_argument("--brief", action="store_true", help="показать только количество карточек по типам")
     overview.add_argument("--states", action="store_true", help="показать сводки направлений и последние события с источниками")
+    overview.add_argument("--arrivals", action="store_true", help="показать последние поступления в Inbox по дням")
+    overview.add_argument("--kind", choices=("meeting", "report", "thread", "recipe", "image", "attachment", "other"),
+                          help="вид материала для --arrivals")
+    overview.add_argument("--day", help="материалы за день поступления ГГГГ-ММ-ДД или undated")
     overview.add_argument("--direction", metavar="ID", help="выбрать направление для --brief или --states")
     overview.add_argument("--folders", action="store_true", help="показать только пути папок и количество карточек")
-    overview.add_argument("--limit", type=brief.result_limit, help="число направлений или папок на странице (1–20, обычно 5)")
-    overview.add_argument("--offset", type=brief.offset, help="сколько направлений или папок пропустить")
+    overview.add_argument("--limit", type=brief.result_limit, help="число результатов на странице (1–20)")
+    overview.add_argument("--offset", type=brief.offset, help="сколько результатов пропустить")
     create = commands.add_parser("create", help="создать направление, проект или заметку")
     create.add_argument("kind", choices=("direction", "project", "note"))
     create.add_argument("title")
@@ -107,18 +111,15 @@ def summary(root, path, record):
 
 
 def list_records(root, args):
-    if args.direction:
-        direction = storage.read_record(storage.find_record(root, args.direction))
-        if direction["type"] != "direction":
-            raise ValueError("Для --direction требуется ID направления.")
+    from . import search_index
     match = None
     if args.match is not None:
         match = search._normalize(args.match.strip())
         if not match:
             raise ValueError("Укажите фрагмент названия или алиаса.")
 
-    def candidates():
-        for path, record in storage.iter_records(root):
+    def candidates(records):
+        for path, record in records:
             if args.direction and record["direction"] != args.direction:
                 continue
             if args.type and record["type"] != args.type:
@@ -128,12 +129,22 @@ def list_records(root, args):
                 continue
             yield summary(root, path, record)
 
-    if args.type or match or args.limit or args.offset is not None:
-        result = brief.page(candidates(), args.limit or brief.DEFAULT_LIMIT, args.offset or 0)
-        for item in result["items"]:
-            brief.clip_fields(item, ("title",))
-        return result
-    return list(candidates())
+    with search_index.optional(root, allow_sync=False) as db:
+        if args.direction:
+            if db is None:
+                direction = storage.read_record(storage.find_record(root, args.direction))
+            else:
+                direction = search_index.find(db, args.direction)
+            if direction["type"] != "direction":
+                raise ValueError("Для --direction требуется ID направления.")
+        records = (search_index.records(root, db, kind=args.type, direction=args.direction)
+                   if db is not None else storage.iter_records(root))
+        if args.type or match or args.limit or args.offset is not None:
+            result = brief.page(candidates(records), args.limit or brief.DEFAULT_LIMIT, args.offset or 0)
+            for item in result["items"]:
+                brief.clip_fields(item, ("title",))
+            return result
+        return list(candidates(records))
 
 
 def run(args):
@@ -208,6 +219,13 @@ def run(args):
         from .workspace import Workspace
         workspace = Workspace(root)
         if args.command == "overview":
+            if args.arrivals:
+                if args.brief or args.folders or args.states or args.direction:
+                    raise ValueError("Для истории поступлений выберите только --arrivals.")
+                from .inbox_activity import inbox_activity
+                return inbox_activity(root, kind=args.kind, day=args.day, limit=args.limit or 3, offset=args.offset or 0)
+            if args.kind or args.day:
+                raise ValueError("Для вида и дня поступления укажите --arrivals.")
             if args.states:
                 if args.brief or args.folders:
                     raise ValueError("Для сводок направлений выберите только --states.")

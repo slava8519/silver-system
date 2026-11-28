@@ -1,4 +1,5 @@
 const obsidianOrigin = "app://obsidian.md";
+const workspacePath = /^\/(?:$|about\.html$|(?:source|report-source|evidence|original|attachment)\/)/;
 
 function localRoute(url) {
   return url.pathname + url.search + url.hash;
@@ -17,7 +18,7 @@ export function workspaceLink(href, current) {
   const page = new URL(current);
   if (page.searchParams.get("embed") !== "workspace") return href;
   const url = new URL(href, page);
-  if (url.origin !== page.origin || !/^\/(?:$|about\.html$|(?:source|report-source|evidence|original|attachment)\/)/.test(url.pathname)) return href;
+  if (url.origin !== page.origin || !workspacePath.test(url.pathname)) return href;
   url.searchParams.set("embed", "workspace");
   url.searchParams.set("binding", page.searchParams.get("binding") || "");
   return localRoute(url);
@@ -34,6 +35,26 @@ export function connectObsidianWorkspace(frame) {
     const bound = workspaceLink(href, frame.location.href);
     if (bound !== href) link.setAttribute("href", bound);
   }
+  // The embedded workspace has no popup permission. Follow local documents in
+  // this frame and pass the reader's external web links to the desktop host.
+  function openLink(event) {
+    if (event.defaultPrevented || (event.type === "auxclick" ? event.button !== 1 : event.button !== 0)) return;
+    const link = event.target.closest?.('a[target="_blank"][href]');
+    if (!link || link.hasAttribute("download")) return;
+    let dest;
+    try { dest = new URL(link.href, frame.location.href); } catch { return; }
+    if (!["https:", "http:"].includes(dest.protocol)) return;
+    if (dest.origin === frame.location.origin) {
+      if (!workspacePath.test(dest.pathname)) return;
+      event.preventDefault();
+      frame.location.assign(workspaceLink(dest.href, frame.location.href));
+    } else {
+      event.preventDefault();
+      frame.parent.postMessage({type: "second-brain-open-web-link", href: dest.href}, obsidianOrigin);
+    }
+  }
+  frame.addEventListener("click", openLink);
+  frame.addEventListener("auxclick", openLink);
   function report() {
     frame.parent.postMessage({type: "second-brain-location", route: browserRoute(frame.location.href)}, obsidianOrigin);
   }

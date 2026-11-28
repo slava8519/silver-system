@@ -3,17 +3,19 @@
 from pathlib import PurePosixPath, PureWindowsPath
 import re
 
-from . import storage
+from . import evidence, storage
 from .query import _line_ref, _state_sources
 
 
-_PROJECT_FIELD_PREFIXES = tuple(key + ":" for key in storage.STATE_FIELDS)
+_PROJECT_FIELD_PREFIXES = tuple(key + ":" for key in storage.PROJECT_EVIDENCE_FIELDS)
 
 
 def _relative(value):
     if not isinstance(value, str) or not value or "\\" in value or any(ord(c) < 32 for c in value):
         raise ValueError("Укажите путь к Markdown-файлу внутри хранилища.")
     path = PurePosixPath(value)
+    if evidence.is_original_path(value):
+        return path
     if (path.is_absolute() or PureWindowsPath(value).drive or path.as_posix() != value
             or any(part.startswith(".") or ":" in part for part in path.parts) or path.suffix.lower() != ".md"):
         raise ValueError("Укажите относительный путь к Markdown-файлу хранилища без скрытых папок.")
@@ -21,10 +23,11 @@ def _relative(value):
 
 
 def _identity(lines):
-    if not lines or lines[0] != "---":
+    rows = iter(lines)
+    if next(rows, "").rstrip("\r\n") != "---":
         return None
-    for row in lines[1:]:
-        if row in ("---", "..."):
+    for row in rows:
+        if row.rstrip("\r\n") in ("---", "..."):
             break
         if row.startswith("id:"):
             value = storage._scalar(row[3:])
@@ -32,8 +35,11 @@ def _identity(lines):
     return None
 
 
-def _read(root, relative):
-    path = storage._inside(root, _relative(relative))
+def _read(root, relative, *, originals=None):
+    relative = _relative(relative)
+    if evidence.is_original_path(relative.as_posix()):
+        return evidence.original_lines(root, relative, cache=originals)
+    path = storage._inside(root, relative)
     if not path.is_file():
         raise FileNotFoundError(f"Источник недоступен: {relative}")
     return path.read_text(encoding="utf-8-sig").splitlines()
@@ -76,12 +82,13 @@ def verify(root, provided):
     if not isinstance(provided, list) or len(provided) > 60:
         raise ValueError("Укажите до 60 ссылок на строки источников.")
     result = []
+    originals = {}
     for item in provided:
         if not isinstance(item, dict):
             raise ValueError("Для основания укажите путь и номер строки.")
         relative = item.get("path")
         try:
-            lines = _read(root, relative)
+            lines = _read(root, relative, originals=originals)
         except FileNotFoundError as error:
             raise ValueError(f"Не удалось найти источник «{relative}». Проверьте путь от корня хранилища.") from error
         number = item.get("line")
@@ -91,8 +98,11 @@ def verify(root, provided):
         quote = item.get("quote", text.strip())
         if not isinstance(quote, str) or not quote.strip() or len(quote) > 600 or quote not in text:
             raise ValueError(f"Нужна точная цитата до 600 символов: {relative}, строка {number}.")
-        identity, line_ref = _identity(lines), _line_ref(text)
-        if item.get("id", identity) != identity:
+        original = evidence.is_original_path(relative)
+        identity = PurePosixPath(relative).stem if original else _identity(lines)
+        line_ref = _line_ref(text)
+        supplied_id = item.get("id", identity)
+        if supplied_id != identity and not (original and supplied_id and supplied_id == _identity(lines)):
             raise storage.ConflictError("Карточка источника изменилась. Перечитайте основание.")
         field_ref = scope = None
         if text.startswith(_PROJECT_FIELD_PREFIXES):
@@ -118,8 +128,14 @@ def verify(root, provided):
     return result
 
 
-def _locate(root, saved):
+def _locate(root, saved, originals):
     relative = _relative(saved["path"])
+    if evidence.is_original_path(saved["path"]):
+        lines = evidence.original_lines(root, relative, cache=originals)
+        # Earlier Markdown reports used the original's embedded card ID, if present.
+        if saved.get("id") and saved["id"] != relative.stem and saved["id"] != _identity(lines):
+            raise storage.ConflictError("ID источника не соответствует сохранённому оригиналу.")
+        return saved["path"], lines
     try:
         lines = _read(root, relative.as_posix())
         if not saved.get("id") or _identity(lines) == saved["id"]:
@@ -130,28 +146,37 @@ def _locate(root, saved):
     if not saved.get("id") or len(relative.parts) < 2:
         raise FileNotFoundError(relative)
     matches = []
-    for candidate in storage.iter_markdown_paths(root, folders=[relative.parts[0]]):
+    folder = relative.parts[0]
+    folders = storage.KINDS.values() if folder in storage.KINDS.values() else (folder,)
+    for candidate in storage.iter_markdown_paths(root, folders=folders):
         name = candidate.relative_to(root)
         if any(part.startswith(".") for part in name.parts):
             continue
         try:
-            lines = candidate.read_text(encoding="utf-8-sig").splitlines()
-            if _identity(lines) == saved["id"]:
-                matches.append((name.as_posix(), lines))
+            with candidate.open(encoding="utf-8-sig") as stream:
+                identifier = _identity(stream)
+            if identifier == saved["id"]:
+                matches.append(name.as_posix())
+                if len(matches) > 1:
+                    break
         except (ValueError, OSError):
             continue
     if len(matches) != 1:
         raise FileNotFoundError(relative)
-    return matches[0]
+    path = matches[0]
+    lines = _read(root, path)
+    if _identity(lines) != saved["id"]:
+        raise FileNotFoundError(relative)
+    return path, lines
 
 
-def resolve(root, saved, href, *, context=False):
+def resolve(root, saved, href, *, context=False, originals=None):
     """Keep the original quote on a missing, edited or ambiguously moved line."""
     result = {**saved, "available": False, "href": href}
     if context:
         result["lines"] = []
     try:
-        path, lines = _locate(root, saved)
+        path, lines = _locate(root, saved, originals)
         scope = saved.get("scope")
         fields = _project_field_refs(root, path, lines)
         legacy_project = scope is None and saved.get("id") and saved["path"].startswith("Projects/")

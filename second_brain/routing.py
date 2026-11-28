@@ -286,9 +286,8 @@ class Routing:
             raise ValueError("Проект должен принадлежать выбранному направлению.")
         if record["revision"] != action.get("expected_revision"):
             raise storage.ConflictError("Проект изменился. Перечитайте карточку и сверьте решение.")
-        if field in record["field_lines"] and field not in record:
-            raise ValueError("Проверьте существующее нестандартное значение поля в Markdown.")
-        old = record.get(field)
+        old = storage.editable_scalar(record, header, field)
+        storage._validate_project_dates("project", record, {field: value})
         header = storage._patch_header(header, record, {} if old == value else {field: value})
         newline = b"\r\n" if header.startswith(b"---\r\n") else b"\n"
         content = header + record["body"].encode()

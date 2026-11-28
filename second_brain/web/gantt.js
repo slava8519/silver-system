@@ -18,7 +18,7 @@ function urlFor(id, task, scope, group = false) {
 const endpoint = (path, id) => path + "?id=" + encodeURIComponent(id);
 
 export function planningView(ui) {
-  const {node, link, button, option, counted, api, pageHead, notice, go} = ui;
+  const {node, link, button, option, counted, api, notice, go} = ui;
   const layers = readLayers();
   let dispose = () => {};
   return async function open(view, id, selectedId, page) {
@@ -52,11 +52,11 @@ export function planningView(ui) {
     const fit = () => fitWindow(plan.items, today, plan.project);
     let period = fit(), mode = "chart", refreshVersion = 0;
     let scope = new URLSearchParams(location.hash.split("?")[1]).get("okr") || "", scopeRows = plan.items;
-    let dragging = false;
+    let dragging = false, overviewOpen = false;
     const folded = initialFolds(plan, scope, selected);
     const stage = node("section", "gantt-stage");
     const [layerButton, layerPanel] = layerPicker(node, layers, cursorLabel, projectView, applyLayers);
-    const narrowToolbar = window.matchMedia("(max-width: 830px), (max-height: 590px)");
+    const narrowToolbar = window.matchMedia("(max-width: 1024px), (max-height: 590px)");
     window.addEventListener("resize", arrangePicker, {signal: life.signal});
     let fitTickLabels = () => {};
     const sizing = new ResizeObserver(() => { fitTickLabels(); drawLinks(); });
@@ -68,7 +68,7 @@ export function planningView(ui) {
     detailPlace.tabIndex = 0;
     const feedback = node("p", "gantt-status");
     feedback.setAttribute("role", "status");
-    const headerActions = [];
+    const actions = node("div", "work-tools gantt-plan-actions");
     if (!projectView) {
       const chooser = node("select");
       chooser.setAttribute("aria-label", "Выбрать план");
@@ -78,18 +78,28 @@ export function planningView(ui) {
         if (discard()) go(urlFor(chooser.value));
         else chooser.value = planId;
       });
-      headerActions.push(chooser);
+      actions.append(chooser);
     }
     const refreshButton = button("Обновить", "button button-secondary", () => {
       if (discard()) refresh("Данные обновлены.").catch(report);
     });
-    const connector = pageHead(projectView ? "Гант проекта · " + vault : vault, plan.title, ...headerActions, refreshButton);
-    connector.classList.add("gantt-heading");
+    actions.append(refreshButton);
+    const intro = node("header", "gantt-intro");
+    const connector = node("div", "gantt-heading");
     const titleLine = node("div", "gantt-title-line");
-    const heading = connector.querySelector("h1");
+    const heading = node("h1", "work-title", plan.title);
     const total = node("span", "gantt-total");
-    heading.replaceWith(titleLine);
     titleLine.append(heading, total);
+    const context = node("div", "gantt-plan-context");
+    context.id = "gantt-plan-context";
+    context.hidden = query.get("projects") !== "1" || projectView;
+    const disclosure = button(projectView ? "О проекте" : "О плане", "gantt-tool gantt-context-toggle", () => {
+      context.hidden = !context.hidden;
+      disclosure.setAttribute("aria-expanded", String(!context.hidden));
+    });
+    disclosure.setAttribute("aria-controls", context.id);
+    disclosure.setAttribute("aria-expanded", String(!context.hidden));
+    connector.append(titleLine, disclosure);
     const projectFacts = node("p", "gantt-project-facts");
     const projectUpdates = node("details", "gantt-project-updates");
     function showProjectFacts() {
@@ -108,45 +118,43 @@ export function planningView(ui) {
       const updates = plan.project.projectUpdates;
       projectUpdates.replaceChildren();
       if (updates?.brief?.text || updates?.total || updates?.warnings?.length) {
-        const project = {...plan.project, projectUpdates:{...updates, events:updates.events.slice(0,1)}};
+        const project = {...plan.project, vaultName:vault, projectUpdates:{...updates, events:updates.events.slice(0,1)}};
         projectUpdates.append(node("summary", "text-link", "Коротко о проекте"), projectUpdatesPanel(ui, project));
       }
       projectUpdates.hidden = !projectUpdates.childElementCount;
     }
     const navigation = node("div", "work-tools gantt-navigation");
     if (projectView) {
-      titleLine.after(projectFacts);
       showProjectFacts();
       const card = ui.compact ? cardLinks(ui, root)("Карточка проекта ↗", plan.path)
         : link("Карточка проекта", "#record/" + encodeURIComponent(id), "text-link");
-      navigation.append(link("← Проектная деятельность", "#activity", "back-link"), card);
-    } else navigation.append(link("← Все планы", "#plans", "back-link"), okrLink(ui, planId));
+      navigation.append(link("← Проекты и Гант", "#activity", "back-link"), card);
+    } else navigation.append(link("← Все планы", "#activity?view=plans", "back-link"), okrLink(ui, planId));
     if (!ui.compact) navigation.append(link("Показать связи", "#map?" + new URLSearchParams({id}), "text-link"));
-    const context = node("div", "gantt-plan-context");
-    context.append(navigation);
-    if (projectView) context.append(projectUpdates);
+    context.append(node("span", "gantt-vault-name", vault), actions, navigation);
+    if (projectView) context.append(projectFacts, projectUpdates);
     if (!projectView) {
-      const params = new URLSearchParams(location.hash.split("?")[1]);
-      context.append(planProjects(ui, planId, {open:params.get("projects") === "1",
+      context.append(planProjects(ui, planId, {open:query.get("projects") === "1",
         currentPlan:() => plan, canEdit:discard, refreshChart:() => refresh()}));
     }
-    const intro = node("div", "gantt-intro");
     intro.append(connector, context);
     view.append(intro, createPlace, stage, detailPlace, feedback);
     const cycleStatus = closed ? node("div", "cycle-heading-status") : null;
+    const cycleDate = closed ? node("time", "cycle-stamp") : null;
     function showCycleLinks() {
       const openNote = cardLinks(ui, root);
-      const stamp = node("time", "cycle-stamp", archive?.text || "Цикл закрыт · " + closedStamp(plan.closedAt));
-      stamp.dateTime = archive?.date || plan.closedAt;
-      cycleStatus.replaceChildren(stamp, openNote("Снимок в Obsidian ↗", plan.path));
+      cycleDate.textContent = archive?.text || "Цикл закрыт · " + closedStamp(plan.closedAt);
+      cycleDate.dateTime = archive?.date || plan.closedAt;
+      cycleStatus.replaceChildren(openNote("Снимок в Obsidian ↗", plan.path));
       for (const issue of plan.weeklyReviews || []) {
         cycleStatus.append(openNote(issue.title + " ↗", issue.path));
       }
       if (plan.weeklyReviewError) cycleStatus.append(node("small", "", plan.weeklyReviewError));
     }
     if (closed) {
+      titleLine.append(cycleDate);
       showCycleLinks();
-      titleLine.after(cycleStatus);
+      context.append(cycleStatus);
     } else if (!projectView) {
       const close = button("Закрыть цикл…", "button button-secondary", () => {
         if (!discard()) return;
@@ -154,11 +162,11 @@ export function planningView(ui) {
         const panel = cyclePreview(ui, planId, root, () => {
           createPlace.replaceChildren();
           stage.hidden = detailPlace.hidden = close.disabled = false;
-          close.focus();
+          (context.hidden ? disclosure : close).focus();
         }, () => go(chartURL(selected)));
         createPlace.replaceChildren(panel); panel.querySelector("h2").focus();
       });
-      connector.querySelector(".work-tools").append(close);
+      actions.append(close);
     }
     function report(error) { if (view.isConnected) feedback.replaceChildren(notice(error.message)); }
     function discard() {
@@ -323,6 +331,7 @@ export function planningView(ui) {
       const legend = stage.querySelector(".gantt-legend");
       if (legend && !legend.querySelector(".gantt-legend-item:not([hidden])")) legend.hidden = true;
       stage.classList.toggle("gantt-show-notes", layers.has("notes"));
+      fitTickLabels();
       markSelection();
     }
     function arrangePicker() {
@@ -556,16 +565,16 @@ export function planningView(ui) {
             axis.append(bounds);
           }
         }
+        const scale = node("div", months.length ? "gantt-ticks gantt-week-ticks" : "gantt-ticks");
+        let stamp;
         if (cursorVisible) {
-          const cursor = node("div", "gantt-cursor-track");
-          cursor.dataset.layer = "now";
-          const stamp = node("span", "gantt-cursor-stamp", cursorLabel + " " + shortDay(today));
+          stamp = node("time", "gantt-cursor-stamp", cursorLabel + " " + shortDay(today));
+          stamp.dateTime = isoDay(today);
+          stamp.dataset.layer = "now";
           stamp.style.left = (todayOnScale * 100) + "%";
           stamp.classList.toggle("align-end", todayOnScale > .5);
-          cursor.append(stamp);
-          axis.append(cursor);
+          scale.append(stamp);
         }
-        const scale = node("div", months.length ? "gantt-ticks gantt-week-ticks" : "gantt-ticks");
         const labels = scaleTicks.map(tick => {
           const mark = node("span");
           mark.style.left = tick.at * 100 + "%";
@@ -577,7 +586,10 @@ export function planningView(ui) {
         });
         fitTickLabels = () => {
           const widths = labels.map(label => label.getBoundingClientRect().width);
-          const sides = tickAlignments(scaleTicks, months, scale.clientWidth, widths);
+          const stampRect = stamp && !stamp.hidden && stamp.getBoundingClientRect();
+          const offset = scale.getBoundingClientRect().left;
+          const occupied = stampRect && [stampRect.left - offset, stampRect.right - offset];
+          const sides = tickAlignments(scaleTicks, months, scale.clientWidth, widths, occupied);
           labels.forEach((label, i) => { label.dataset.side = sides[i]; });
         };
         axis.append(scale); head.append(axis);
@@ -862,7 +874,6 @@ export function planningView(ui) {
       const overall = progressValue(plan.progress?.value);
       total.textContent = overall === null ? "" : "Готовность плана · " + (plan.progress.hasEstimates ? "≈" : "") + progressText(overall);
       stage.replaceChildren(controls, board, legend);
-      fitTickLabels();
       arrangePicker();
       controls.scrollLeft = toolbarLeft;
       if (mode === "chart" && pickerOpen && !layerPanel.matches(":popover-open")) layerPanel.showPopover();
@@ -882,7 +893,8 @@ export function planningView(ui) {
         close.setAttribute("aria-label", "Снять выделение");
         const title = node("h2", "", detail.title); title.tabIndex = -1;
         header.append(title, close);
-        project.append(header, projectUpdatesPanel(ui, detail, () => refresh("Сводка проекта сохранена.").catch(report)));
+        project.append(header, projectUpdatesPanel(ui, {...detail, vaultName:vault},
+          () => refresh("Сводка проекта сохранена.").catch(report)));
         const editing = () => !!project.querySelector("form");
         inspector = {editing, canLeave: () => {
           if (!editing()) return true;
@@ -953,15 +965,15 @@ export function planningView(ui) {
           detailPlace.append(box);
         }
       } else {
+        const fold = node("details", "gantt-overview-fold");
         const overview = node("section", "gantt-overview");
-        const summary = node("div");
         const rows = scopeRows.filter(r => !r.missing);
         const milestones = rows.filter(r => r.kind === "milestone").length;
         const totals = [counted(rows.length - milestones, ["задача", "задачи", "задач"])];
         if (milestones) totals.push(counted(milestones, ["веха", "вехи", "вех"]));
-        summary.append(node("h2", "", scope ? "Работы по фильтру" : closed ? "Итог цикла" : projectView ? "Работы проекта" : "Обзор плана"), node("p", "", totals.join(" · ")));
-        if (rows.length) summary.append(node("small", "", closed ? "Выберите работу для просмотра сохранённых дат." :
-          "Выберите строку, чтобы открыть сводку и события."));
+        const title = scope ? "Работы по фильтру" : closed ? "Итог цикла" : projectView ? "Работы проекта" : "Обзор плана";
+        const summary = node("summary", "", title);
+        summary.append(node("span", "gantt-overview-count", totals.join(" · ")));
         const nearest = rows.filter(r => !r.completed && r.due && dayOf(r.due) >= today).sort((a, b) => a.due.localeCompare(b.due))[0];
         const next = node("div");
         next.append(node("h3", "", archive ? "Ближайший срок на дату архивной записи" : closed ? "Ближайший срок на дату закрытия" : "Ближайший согласованный срок"));
@@ -972,7 +984,11 @@ export function planningView(ui) {
         if (undated.length) {
           for (const row of undated) open.append(button(row.title, "gantt-action", () => choose(row.id)));
         } else open.append(node("p", "gantt-empty", "Таких задач нет."));
-        overview.append(summary, next, open); detailPlace.replaceChildren(overview);
+        overview.append(next, open);
+        fold.append(summary, overview);
+        fold.open = overviewOpen;
+        fold.addEventListener("toggle", () => { if (fold.isConnected) overviewOpen = fold.open; });
+        detailPlace.replaceChildren(fold);
       }
     }
     if (selected && hasSelection(plan, selected)) {

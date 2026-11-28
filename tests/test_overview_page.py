@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import sys
 import threading
@@ -26,12 +27,12 @@ class OverviewPageTests(unittest.TestCase):
         self.addCleanup(worker.join)
         self.addCleanup(self.http.shutdown)
 
-    def get(self, path, *, expected=200, **params):
+    def get(self, endpoint, *, expected=200, **params):
         connection = HTTPConnection("127.0.0.1", self.http.server_port, timeout=5)
         try:
-            connection.request("GET", path + ("?" + urlencode(params) if params else ""))
+            connection.request("GET", endpoint + ("?" + urlencode(params) if params else ""))
             response = connection.getresponse()
-            self.assertEqual(response.status, expected, path)
+            self.assertEqual(response.status, expected, endpoint)
             return json.load(response) if response.headers.get_content_type() == "application/json" else response.read().decode()
         finally:
             connection.close()
@@ -50,10 +51,96 @@ class OverviewPageTests(unittest.TestCase):
         self.assertEqual(self.cli("--brief")["counts"]["direction"], 0)
         self.assertTrue(self.cli("--folders")["items"])
         shell = self.get("/")
-        for route in ("overview", "inbox", "plans", "activity", "records", "people", "map"):
+        self.assertNotIn('data-page="plans"', shell)
+        for route in ("overview", "inbox", "activity", "records", "people", "map"):
             with self.subTest(route=route):
                 self.assertIn(f'href="#{route}"', shell)
         self.assertIn('href="/about.html"', shell)
+
+    def browser_html(self, route, profile):
+        chrome = (shutil.which("chromium") or shutil.which("google-chrome")
+                  or "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+        if not Path(chrome).is_file():
+            self.skipTest("Для проверки навигации нужен Chromium.")
+        # --dump-dom can finish before a local API response arrives.
+        for _ in range(3):
+            html = subprocess.check_output([
+                chrome, "--headless", "--disable-gpu", "--no-first-run", "--no-sandbox",
+                "--user-data-dir=" + profile, "--virtual-time-budget=5000", "--dump-dom",
+                f"http://127.0.0.1:{self.http.server_port}/#{route}"],
+                text=True, timeout=20, stderr=subprocess.DEVNULL)
+            if '<main id="content" tabindex="-1" aria-busy="true"' not in html:
+                return html
+        self.fail(f"Страница #{route} не дождалась ответа API.")
+
+    def test_one_planning_tab_for_bookmarks_filtered_catalog_and_chart(self):
+        plan = Planning(self.root).create_plan("Зимние пробы")
+        with TemporaryDirectory() as profile:
+            for route in ("plans?q=пробы", "activity?view=plans", "plan/" + plan["id"]):
+                with self.subTest(route=route):
+                    html = self.browser_html(route, profile)
+                    self.assertIn('data-page="activity" aria-current="page">Проекты и Гант', html)
+                    self.assertNotIn('data-page="plans"', html)
+                    self.assertIn("Зимние пробы", html)
+                    if not route.startswith("plan/"):
+                        self.assertIn('aria-pressed="true">Планы</button>', html)
+
+    def test_browser_opens_new_and_edit_forms_with_an_unrelated_broken_note(self):
+        healthy = storage.read_record(storage.create(self.root, "project", "Здоровая карточка"))
+        (self.root / "Notes/Правка.md").write_text("---\nid: unfinished\ntype: note\ntitle: В работе\n", encoding="utf-8")
+        self.get("/api/workspace", expected=400)
+        with TemporaryDirectory() as profile:
+            for route, title in (("new/note", "Новая карточка"), ("edit/" + healthy["id"], "Редактировать карточку")):
+                with self.subTest(route=route):
+                    html = self.browser_html(route, profile)
+                    self.assertIn(f'class="work-title">{title}</h1>', html)
+                    self.assertIn('class="work-panel work-editor"', html)
+
+    def test_record_links_open_managed_and_plain_markdown_inside_the_card_folders(self):
+        card = storage.create(self.root, "project", "Зелёный чай", "## Образцы\n\nТри пробы.")
+        path = card.relative_to(self.root).as_posix()
+        by_path = self.get("/api/record", path=path)
+        self.assertEqual(by_path, self.get("/api/record", id=by_path["id"]))
+        folder = self.root / "Notes" / "Sampling"
+        folder.mkdir()
+        note = folder / "Дегустация.md"
+        raw = "---\norigin: demo\n---\n# Дегустация\n\n## Вывод\n\nОбразец принят."
+        note.write_text(raw, encoding="utf-8")
+        result = self.get("/api/record", path="Directions/Дегустация.md", short="1")
+        self.assertEqual((result["type"], result["path"], result["raw"], result["body"]),
+                         ("markdown", "Notes/Sampling/Дегустация.md", raw, raw[raw.index("#"):]))
+        self.assertEqual(self.get("/api/record", path="Дегустация.md", short="1"), result)
+        # Two short names must never silently take the reader to the wrong source.
+        (self.root / "Projects" / note.name).write_text("Другие пробы.", encoding="utf-8")
+        self.get("/api/record", path="Directions/Дегустация.md", short="1", expected=400)
+        self.assertEqual(self.get("/api/record", path=result["path"], short="1")["raw"], raw)
+        (self.root / "Notes" / "Outside.md").symlink_to(self.root / "Home.md")
+        for invalid in ("Settings/Test.md", "Notes/../../Home.md", "/Notes/Test.md", "Notes/.cache/File.md",
+                        "Notes/Outside.md", "Notes/Test.exe", "Notes/..\\Home.md", "People/Test.md"):
+            with self.subTest(invalid=invalid):
+                self.get("/api/record", path=invalid, expected=400)
+        self.get("/api/record", path="Notes/Missing.md", expected=404)
+
+    def test_folder_counts_cover_reports_templates_series_and_plan_groups(self):
+        cards = [("Reports/2026/Выпуск.md", "report_issue", "issue"), ("Reports/Неделя.md", "weekly_review", "week"),
+                 ("Settings/Templates/Reports/example/v1.md", "report_template", "example"),
+                 ("Settings/Templates/Reports/example/v2.md", "report_template", "example"),
+                 ("Settings/Formats/ReportSeries/Серия.md", "report_series", "series"),
+                 ("Plans/Groups/calendar/Направление.md", "gantt_group", "group")]
+        for name, kind, identifier in cards:
+            path = self.root / name
+            path.parent.mkdir(exist_ok=True, parents=True)
+            path.write_text(f'---\ntype: {kind}\nid: {identifier}\nschema_version: 1\ntitle: Карточка\n---\nМатериал.\n')
+        (self.root / "Reports/Черновик.md").write_text("# Обычный Markdown")
+        (self.root / "Plans/Копия.md").write_bytes((self.root / cards[0][0]).read_bytes())
+        rows = self.get("/api/workspace")["folders"]
+        counts = {r["path"]: r["count"] for r in rows}
+        for folder, expected in (("Reports", 2), ("Reports/2026", 1), ("Settings", 3),
+                                 ("Settings/Templates/Reports", 2), ("Settings/Formats/ReportSeries", 1),
+                                 ("Plans", 1), ("Plans/Groups", 1)):
+            self.assertEqual(counts[folder], expected, folder)
+        offset = next(n for n, row in enumerate(rows) if row["path"] == "Reports")
+        self.assertEqual(self.cli("--folders", "--offset", str(offset), "--limit", "1")["items"], [rows[offset]])
 
     def test_catalog_pages_and_scoped_states_refresh_from_live_markdown(self):
         areas = [storage.read_record(storage.create(self.root, "direction", name))["id"]

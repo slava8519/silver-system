@@ -53,14 +53,33 @@ class Capture:
         folder = storage._inside(self.root, "Inbox")
         if not folder.is_dir():
             raise ValueError("Сначала подготовьте Inbox хранилища командой init.")
-        with storage._staged(folder / stem, data) as staged:
-            for number in count(1):
-                name = (stem if number == 1 else f"{stem} ({number})") + suffix
-                target = storage._inside(self.root, "Inbox") / name
-                try:
-                    # Publish the complete file at a fresh name in one step.
-                    os.link(staged, target)
-                except FileExistsError:
-                    continue
-                return {"path": target.relative_to(self.root).as_posix(), "size": len(data),
-                        "revision": sha256(data).hexdigest()}
+        from .inbox import Inbox
+        from .inbox_activity import record_arrival
+        from .inbox_archive import completed_original
+        digest = sha256(data).hexdigest()
+        with storage._write_lock(self.root):
+            try:
+                reviewed = completed_original(Inbox(self.root), digest)
+            except (OSError, ValueError):
+                # Keep the uploaded bytes when the old receipt or original needs repair.
+                reviewed = None
+            if reviewed:
+                return {"path": reviewed.relative_to(self.root).as_posix(), "size": len(data),
+                        "revision": digest, "alreadyProcessed": True}
+            with storage._staged(folder / stem, data) as staged:
+                for number in count(1):
+                    name = (stem if number == 1 else f"{stem} ({number})") + suffix
+                    target = storage._inside(self.root, "Inbox") / name
+                    try:
+                        # Publish the complete file at a fresh name in one step.
+                        os.link(staged, target)
+                    except FileExistsError:
+                        continue
+                    relative = target.relative_to(self.root).as_posix()
+                    try:
+                        record_arrival(self.root, relative, digest)
+                    except Exception:
+                        if target.is_file() and not target.is_symlink() and target.samefile(staged):
+                            target.unlink()
+                        raise
+                    return {"path": relative, "size": len(data), "revision": digest}

@@ -18,15 +18,18 @@ function panel(vault, clipboard, execCommand) {
     return {...node("button", className, label), click: action};
   }
   const section = renderOverviewCommands({node, button}, vault);
-  const [, , list, manual, status] = section.children;
-  return {doc, rows: list.children, manual, status, section};
+  const [, , list, additional, manual, status] = section.children;
+  return {doc, rows: [...list.children, ...additional.children[1].children], manual, status, section};
 }
 
 test("management requests copy their visible action and the exact selected vault", async () => {
   const vault = "/Volumes/Мои записи/Кедр & Маяк";
   const copied = [];
   const {rows, manual, status, section} = panel(vault, {writeText: async text => copied.push(text)});
-  assert.match(section.children[0].textContent, /Управление вторым мозгом/);
+  assert.equal(section.children[0].textContent, "Запросы для чата");
+  assert.equal(section.children[2].children.length, 3);
+  assert.equal(section.children[3].tag, "details");
+  assert.equal(section.children[3].children[0].textContent, "Другие запросы · 6");
   assert.equal(copied.length, 0);
   const labels = rows.map(row => row.children[0].textContent);
   assert.equal(labels.length, 9);

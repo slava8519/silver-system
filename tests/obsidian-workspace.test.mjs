@@ -43,3 +43,30 @@ test("the frame reports the initial section and replacements of the active histo
   assert.deepEqual(messages, ["#activity", "#activity?q=one"].map(hash =>
     [{type: "second-brain-location", route: "/" + hash}, "app://obsidian.md"]));
 });
+
+test("sandboxed new-tab links open a web page via Obsidian or a bound source inside the frame", () => {
+  const listeners = new Map(), messages = [], followed = [];
+  const frame = {
+    location: {origin, href:origin + "/" + query, search:query, assign: url => followed.push(url)},
+    document: {querySelectorAll: () => []},
+    parent: {postMessage: (msg, target) => messages.push([msg, target])},
+    addEventListener: (name, fn) => listeners.set(name, fn)
+  };
+  connectObsidianWorkspace(frame);
+  messages.length = 0;
+  function click(href, {download = false, type = "click", button = 0} = {}) {
+    const link = {href, hasAttribute: name => name === "download" && download};
+    let handled = false;
+    listeners.get(type)({type, button, target:{closest: () => link}, preventDefault: () => { handled = true; }});
+    return handled;
+  }
+  assert.ok(click("https://example.org/notes#sources", {type:"auxclick", button:1}));
+  assert.ok(click(origin + "/report-source/issue?index=0#cited-line"));
+  assert.deepEqual(messages, [[{type:"second-brain-open-web-link", href:"https://example.org/notes#sources"}, "app://obsidian.md"]]);
+  assert.equal(followed.length, 1);
+  assert.equal(new URL(followed[0], origin).searchParams.get("binding"), binding);
+  assert.equal(browserRoute(new URL(followed[0], origin)), "/report-source/issue?index=0#cited-line");
+  assert.equal(click("file:///test"), false);
+  assert.equal(click(origin + "/api/workspace"), false);
+  assert.equal(click(origin + "/attachment/file", {download:true}), false);
+});

@@ -36,7 +36,7 @@ def _task_records(planning, rows):
     pending = previous_versions(planning.root)
     records, moved = {}, set()
     for row in rows:
-        if not row.get("path"):
+        if not row.get("path") or not row.get("revision"):
             continue
         relative = PurePosixPath(row["path"])
         if relative.parts[:1] != ("Tasks",) or ".." in relative.parts or relative.suffix.lower() != ".md":
@@ -109,7 +109,7 @@ def _as_of_events(record, cutoff, unchanged, start, end, title, warnings):
 
 
 def _sources(root, refs):
-    return [{**resolve_source(root, ref), "kind": "source"} for ref in refs]
+    return [{**resolve_source(root, ref, allow_originals=True), "kind": "source"} for ref in refs]
 
 
 def _snapshot_fact(plan, row):
@@ -165,7 +165,7 @@ def _events(row, current, cutoff, start, end, snapshot, root, warnings):
                     completion_sources += _sources(root, history[-1]["sources"])
                 except (ValueError, OSError):
                     warnings.append(f'«{common["title"]}» — исходная запись о завершении требует сверки.')
-    elif not row.get("missing"):
+    elif row.get("revision") and not row.get("missing"):
         warnings.append(f'«{common["title"]}» — карточка событий недоступна.')
     if in_period:
         yield {**common, "kind": "event", "date": completion,
@@ -184,6 +184,12 @@ def build_weekly_evidence(root, plan_id, *, start=None, end=None, timezone_name=
         cutoff = closed, "." in plan["closedAt"]
         facts, warnings = [], []
         records = _task_records(planning, plan["items"])
+        legacy_rows = [row for row in plan["items"] if not row.get("revision") and not row.get("missing")]
+        if legacy_rows:
+            source = _snapshot_fact(plan, legacy_rows[0])["sources"]
+            warnings.append({"text": f"В {len(legacy_rows)} строках снимка не сохранена ревизия работы. "
+                                     "Для этих строк показаны только сведения, зафиксированные в снимке.",
+                             "sources": source})
         for row in plan["items"]:
             snapshot = _snapshot_fact(plan, row)
             facts.append(snapshot)

@@ -127,9 +127,9 @@ class People:
                     continue
                 yield path
 
-    def _cards(self):
+    def _cards(self, paths=None):
         seen = set()
-        for path in self.paths():
+        for path in self.paths() if paths is None else paths:
             data = path.read_bytes()
             try:
                 record, _ = storage._parse_record(path, data, kinds={"person"})

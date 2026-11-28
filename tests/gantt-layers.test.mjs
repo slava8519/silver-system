@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {fitWindow, scheduleMarks, todayDay} from "../second_brain/web/gantt-axis.js";
 import {readLayers, saveLayers} from "../second_brain/web/gantt-layers.js";
 
-test("Gantt preferences default to bars and today and preserve even an empty selection", t => {
+test("due-only tasks and milestones are visible on first open and respect saved preferences", t => {
   const data = new Map();
   const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
   const storage = {getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value)};
@@ -11,7 +12,14 @@ test("Gantt preferences default to bars and today and preserve even an empty sel
     if (previous) Object.defineProperty(globalThis, "localStorage", previous);
     else delete globalThis.localStorage;
   });
-  assert.deepEqual([...readLayers()], ["range", "now"]);
+  const defaultLayers = ["range", "now", "due"];
+  assert.deepEqual([...readLayers()], defaultLayers);
+  const rows = ["task", "milestone"].map(kind => ({kind, due: "2026-11-27"}));
+  const window = fitWindow(rows, todayDay());
+  const visible = row => scheduleMarks(row, window).map(mark => mark.kind).filter(kind => readLayers().has(kind));
+  for (const row of rows) assert.deepEqual(visible(row), ["due"]);
+  saveLayers(new Set(["range", "now"]));
+  for (const row of rows) assert.deepEqual(visible(row), []);
   saveLayers(new Set(["forecast", "relations"]));
   assert.deepEqual([...readLayers()], ["forecast", "relations"]);
   saveLayers(new Set());
@@ -20,8 +28,8 @@ test("Gantt preferences default to bars and today and preserve even an empty sel
   data.set(key, '["unknown-layer","due"]');
   assert.deepEqual([...readLayers()], ["due"]);
   data.set(key, "{");
-  assert.deepEqual([...readLayers()], ["range", "now"]);
+  assert.deepEqual([...readLayers()], defaultLayers);
   storage.getItem = storage.setItem = () => { throw Error("Storage unavailable"); };
-  assert.deepEqual([...readLayers()], ["range", "now"]);
+  assert.deepEqual([...readLayers()], defaultLayers);
   assert.doesNotThrow(() => saveLayers(new Set(["baseline"])));
 });

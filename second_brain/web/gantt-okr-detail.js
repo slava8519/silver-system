@@ -115,7 +115,7 @@ function initiativesPanel(ui, card, rows, plan, historical, options, planURL, do
       const weight = card.taskWeights?.[row.id];
       cell(ui,r,"Вес в КР",fractionPercent(weight));
       const state = row.readiness;
-      const actual = cell(ui,r,"Готовность",state ? quantity(state.value,"%") : "—");
+      const actual = cell(ui,r,"Готовность",readiness(state));
       if (state) {
         actual.append(node("small","okr-sub",(state.kind === "estimate" ? "Оценка" : "Факт") + " · " + dateText(state.date)));
         if (state.reason) {
@@ -170,7 +170,7 @@ export async function cardPage(ui, view, id, planId, planURL) {
     const rows = card.taskIds.map(key => ({id:key,...details.get(key),...physical.get(key)}));
     const plan = board?.plan;
     const nav = node("nav","okr-detail-nav work-tools");
-    nav.append(link(plan ? "← " + plan.title : "← Проектная деятельность",boardURL(currentPlan),"back-link"));
+    nav.append(link(plan ? "← " + plan.title : "← Проекты и Гант",boardURL(currentPlan),"back-link"));
     if (plan) nav.append(link("Ветвь КР в Ганте",planURL(plan.id) + "?" + new URLSearchParams({okr:id}),"text-link"));
     const actions = [];
     if (!historical) actions.push(cardLinks(ui,card.root)("Карточка в Obsidian ↗",card.path));

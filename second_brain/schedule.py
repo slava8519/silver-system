@@ -50,20 +50,7 @@ def schedule_history(record, relative_path):
 
 
 def _current_field(record, header, field):
-    current = record.get(field)
-    if current is not None:
-        return validate_due(current)
-    number = record["field_lines"].get(field)
-    if number is not None:
-        lines = header.decode().splitlines()
-        raw = lines[number - 1].partition(":")[2].strip()
-        # A legacy vault can already use the same YAML key for a list or mapping.
-        if raw and not raw.startswith("#") and not re.fullmatch(r"(?:null|~)(?:\s+#.*)?", raw, re.I):
-            raise ValueError(f"Для изменения сложного поля {field} откройте Markdown.")
-        following = next((line for line in lines[number:] if line.strip() and not line.lstrip().startswith("#")), "")
-        if following.startswith((" ", "\t", "- ")):
-            raise ValueError(f"Для изменения многострочного поля {field} откройте Markdown.")
-    return None
+    return validate_due(storage.editable_scalar(record, header, field))
 
 
 def _request(field, value, actor, reason, sources, owner_confirmed):
@@ -125,7 +112,9 @@ class Schedule:
 
     def _preview(self, context, record, header, request):
         before = _current_field(record, header, request["field"])
-        sources = verify_sources(self.root, request["sources"])
+        owner_basis = request["reason"] and (request["actor"] == "manual" or request["ownerConfirmed"])
+        date = request["after"] if request["field"] == "completed" and not owner_basis else None
+        sources = verify_sources(self.root, request["sources"], completion_date=date)
         verified = {**request, "sources": sources}
         revision = _hash(["schedule", record["id"], record["revision"], verified,
                           sorted(p["id"] for p in context["plans"])])

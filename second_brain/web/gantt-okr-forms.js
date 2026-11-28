@@ -176,7 +176,7 @@ export function assignmentEditor(ui, card, options) {
   const plans = new Map(options.plans.map(row => [row.id, row.title]));
   if (!objectives.length) {
     const empty = ui.node("p", "gantt-context", "Чтобы включить результат в план, создайте цель в том же направлении. ");
-    empty.append(ui.link("Проектная деятельность", "#activity", "text-link"));
+    empty.append(ui.link("Проекты и Гант", "#activity", "text-link"));
     return empty;
   }
   return editor(ui, "Включить в цель плана", "Включить в цель", form => {

@@ -145,6 +145,25 @@ class RecordCheckTests(unittest.TestCase):
         count, checked = self.scan()
         self.assertEqual((count, checked.issues), (2, []))
 
+    def test_report_checks_the_specific_template_version_after_archiving(self):
+        first = reports.save_template(self.root, title="Формат", audience="Команда", guidance="", body="## Факты")
+        issue = reports.save_issue(self.root, title="Итог", body="Замер проведён.",
+                                   template_id=first["id"], template_version=1)
+        reports.save_template(self.root, id=first["id"], revision=first["revision"],
+                              title="Формат", audience="Команда", guidance="", body="## Новые факты")
+        self.assertEqual(check_vault(self.root)["status"], "ok")
+        path = self.root / first["path"]
+        archived = path.rename(self.root / "Archive/Первая версия.md")
+        problem, = check_vault(self.root)["issues"]["items"]
+        self.assertEqual((problem["code"], problem["path"]), ("record.template_version", issue["path"]))
+        self.assertIn("template_version:", (self.root / issue["path"]).read_text().splitlines()[problem["line"] - 1])
+        archived.rename(path)
+        self.assertEqual(check_vault(self.root)["status"], "ok")
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write("\nПравка старой версии в Obsidian.\n")
+        changed, = check_vault(self.root)["issues"]["items"]
+        self.assertEqual((changed["path"], changed["code"]), (issue["path"], "record.template_version"))
+
     def test_gantt_read_and_vault_check_locate_the_same_unclosed_task_entry(self):
         task = Planning(self.root).create_task("Первая проба")
         gantt = Gantt(self.root)
@@ -189,3 +208,16 @@ class RecordCheckTests(unittest.TestCase):
                 self.assertEqual((result["status"], problem["code"], problem["path"], problem["line"]),
                                  ("issues", "record.structure", issue["path"], line))
                 self.assertNotIn(secret, repr(result))
+
+    def test_check_finds_a_damaged_readiness_entry_at_the_gantt_error_line(self):
+        task = Planning(self.root).create_task("Испытание")
+        path = self.root / task["path"]
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write("- Готовность 30% <!-- task-readiness: повреждено -->\n")
+        line = len(path.read_text().splitlines())
+        with self.assertRaisesRegex(ValueError, f"строке {line}"):
+            Gantt(self.root).detail(task["id"])
+        result = check_vault(self.root)
+        item, = result["issues"]["items"]
+        self.assertEqual((result["status"], item["code"], item["path"], item["line"]),
+                         ("issues", "record.structure", task["path"], line))

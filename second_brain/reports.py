@@ -23,7 +23,7 @@ _END = "<!-- /second-brain:report-evidence -->"
 _SOURCE = "<!-- report-source "
 _TEMPLATE_FIELDS = ("version", "audience", "guidance", "parent_revision")
 _ISSUE_FIELDS = ("template_id", "template_version", "template_revision", "series_id", "period_start",
-                 "period_end", "created_at", "as_of")
+                 "period_end", "created_at", "as_of", "release_date")
 _SERIES_FIELDS = ("template_id", "cadence", "period_start")
 
 
@@ -248,7 +248,7 @@ def _series_view(row, issues):
     if cadence not in (*_CADENCE_DAYS, *_CADENCE_MONTHS):
         raise ValueError(f"Проверьте периодичность серии в {row['path']}.")
     anchor = _day(row["period_start"])
-    starts = {r["period_start"] for r in issues.values() if r.get("series_id") == row["id"]}
+    starts = {r.get("period_start") for r in issues.values() if r.get("series_id") == row["id"]}
     index = 0
     while _boundary(anchor, cadence, index).isoformat() in starts:
         index += 1
@@ -304,7 +304,8 @@ def _issue_summary(row):
     return {"id": row["id"], "title": row["title"], "kind": "report_issue", "path": row["path"],
             "templateId": row["template_id"], "templateVersion": _version(row["template_version"]),
             "seriesId": row.get("series_id"), "start": row.get("period_start"), "end": row.get("period_end"),
-            "createdAt": row.get("created_at"), "asOf": row.get("as_of")}
+            "createdAt": row.get("created_at"), "asOf": row.get("as_of"),
+            **({"releaseDate": row["release_date"]} if row.get("release_date") else {})}
 
 
 def _legacy_summary(row):
@@ -322,7 +323,8 @@ def list_issues(root, *, series_id=None, match=None, limit=20, offset=0):
             items.extend(_legacy_summary(r) for r in _issue_catalog(root)[0])
         if term:
             items = [item for item in items if term in item["title"].casefold()]
-        items.sort(key=lambda r: (r.get("end") or (r.get("createdAt") or "")[:10], r.get("createdAt") or "", r["id"]),
+        items.sort(key=lambda r: (r.get("releaseDate") or r.get("end") or (r.get("createdAt") or "")[:10],
+                                  r.get("createdAt") or "", r["id"]),
                    reverse=True)
         return _page(items, limit, offset)
 
@@ -391,7 +393,9 @@ def get_issue(root, id):
     root = Path(root).resolve()
     with storage._vault_lock(root, write=False):
         issue, saved = _extract_issue(root, id)
-        issue["sources"] = [report_sources.resolve(root, s, _source_href(id, i)) for i, s in enumerate(saved)]
+        originals = {}
+        issue["sources"] = [report_sources.resolve(root, s, _source_href(id, i), originals=originals)
+                            for i, s in enumerate(saved)]
         if issue["kind"] == "report_issue":
             try:
                 path = _template_path(root, issue["templateId"], issue["templateVersion"])

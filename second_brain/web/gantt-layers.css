@@ -16,9 +16,8 @@
 .gantt-layer-picker input[type=checkbox] { width: 15px; min-width: 0; height: 15px; min-height: 0; margin: 0; accent-color: #3b5e80; }
 .gantt-stage [data-layer][hidden] { display: none; }
 .gantt-stage:not(.gantt-show-notes) .gantt-grid .gantt-percent::before { content: none; }
-.gantt-cursor-track { position: relative; height: 16px; }
 .gantt-cursor-stamp {
-  position: absolute; inset-block: 0; border-left: 1px solid currentColor; padding-inline-start: 4px;
-  white-space: nowrap; font: 600 11px/16px var(--sans); font-variant-numeric: tabular-nums; color: #ac3c36;
+  position: absolute; inset-block: 0; z-index: 1; border-left: 1px solid currentColor; padding-inline-start: 4px;
+  white-space: nowrap; font: 600 11px/18px var(--sans); font-variant-numeric: tabular-nums; color: #ac3c36; background: #f6f8f6;
 }
 .gantt-cursor-stamp.align-end { transform: translateX(-100%); border: 0; border-right: 1px solid currentColor; padding-inline: 0 4px; }

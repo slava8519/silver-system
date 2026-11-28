@@ -95,6 +95,24 @@ class GanttInterfaces(unittest.TestCase):
                     items = self.request("/api/plan?id=" + parent["id"])[1]["items"]
                     self.assertEqual(next(t for t in items if t["id"] == key)["due"], "2026-12-01")
 
+    def test_start_edit_preserves_structured_markdown_properties(self):
+        task = self.planning.create_task("Импортированная работа")
+        path = self.root / task["path"]
+        initial = path.read_text()
+        for field in ("start: {date: 2026-11-20, source: meeting}", "start: [meeting, release]",
+                      "start:\n- meeting\n- release"):
+            with self.subTest(field=field):
+                path.write_text(initial.replace("---\n", "---\n" + field + "\n", 1))
+                before = path.read_bytes()
+                status, card, _ = self.request("/api/plan/task?id=" + task["id"])
+                self.assertEqual(status, 200)
+                for value in ("2026-11-25", None):
+                    status, error, _ = self.request("/api/plan/task/edit", {
+                        "id": task["id"], "revision": card["revision"], "field": "start", "value": value})
+                    self.assertEqual(status, 400)
+                    self.assertIn("Markdown", error["error"])
+                    self.assertEqual(path.read_bytes(), before)
+
     def test_review_reappears_after_native_edit_and_survives_ai_only_edits(self):
         feedback = GanttFeedback(self.root)
         for row in list(feedback.pending()):

@@ -9,7 +9,9 @@ from urllib.parse import unquote
 
 from second_brain import storage
 from second_brain.__main__ import command_line, run
+from second_brain.batch import Batch
 from second_brain.cycles import Cycles
+from second_brain.gantt import Gantt
 from second_brain.plan_dates import Deadlines
 from second_brain.planning import Planning
 from second_brain.weekly_report import _finding, published_issues
@@ -75,6 +77,36 @@ class WeeklyReports(unittest.TestCase):
         self.assertEqual(warnings["items"][0]["sources"][0]["href"], "http://localhost/#plan/" + plan +
                          "?task=" + tasks[1]["id"])
         self.assertEqual(len(self.cli(plan, "--limit", "1")["warnings"]), 1)
+
+    def test_event_from_archived_inbox_original_in_preview_and_saved_report(self):
+        quoted = "2026-11-20. Проверка образца завершена."
+        incoming = self.root / "Inbox/Протокол.md"
+        incoming.write_text("# Протокол\n" + quoted + "\n")
+        inbox = Batch(self.root)
+        item, = inbox.pending()
+        archived = inbox.apply({"path": item["path"], "revision": item["revision"], "actions": [
+            {"kind": "triage", "line": 2, "quote": quoted, "reason": "Уточнить получателя."}]})["source"]
+        with patch("second_brain.gantt.datetime") as clock:
+            clock.now.return_value = datetime(2026, 11, 20, 12, tzinfo=timezone.utc)
+            Gantt(self.root).edit({"id": self.task["id"], "revision": self.task["revision"], "actor": "ai",
+                                   "field": "latest", "date": "2026-11-20", "text": "Образец проверен.",
+                                   "sources": [{"path": archived["path"], "line": 2, "quote": quoted}]})
+        plan = self.closed("Неделя проверки", [self.task], 23)
+        preview = self.cli(plan)
+        self.assertEqual(preview["warnings"], [])
+        event, = [fact for fact in preview["items"] if fact["kind"] == "event"]
+        source, = event["sources"]
+        self.assertEqual((event["text"], source["path"], source["line"], source["quote"]),
+                         ("Образец проверен.", archived["path"], 2, quoted))
+        link = f"/original/{archived['id']}?start=2"
+        self.assertEqual(source["href"], link)
+        saved = self.cli(plan, "--gantt-url", "http://localhost:9876", "--save")
+        self.assertIn("http://localhost:9876" + link, (self.root / saved["path"]).read_text())
+
+        (self.root / archived["path"]).write_text("Изменённый оригинал")
+        changed = self.cli(plan)
+        self.assertEqual([fact["kind"] for fact in changed["items"]], ["snapshot"])
+        self.assertEqual(changed["warningTotal"], 1)
 
     def test_concurrent_publish_replay_owner_edit_rename_and_custom_format(self):
         self.format.write_text("---\ntitle: Коротко за неделю\ngroup_by: kind\n---\n")

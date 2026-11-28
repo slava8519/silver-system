@@ -1,7 +1,7 @@
 import {timelineDates} from "./gantt-axis.js";
 
 const storageKey = "second-brain.gantt.layers.v1";
-const defaults = ["range", "now"];
+const defaults = ["range", "now", "due"];
 const keys = new Set([...defaults, ...Object.keys(timelineDates), "project", "relations", "notes", "legend"]);
 
 export function readLayers() {

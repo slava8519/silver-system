@@ -15,6 +15,23 @@ _DATE_PATTERNS = (
     re.compile(r"(?<!\d)(?P<day>\d{1,2})\s+(?P<month>" + "|".join(_MONTHS) + r")\s+(?P<year>\d{4})(?!\d)", re.I),
 )
 _ORIGINAL = re.compile(r"Sources/Originals/([0-9a-f]{64})\.(?:txt|md)\Z")
+_DAY_MONTH = re.compile(r"(?<!\w)(\d{1,2})\s+(" + "|".join(_MONTHS) + r")\b", re.I)
+
+
+def is_original_path(relative):
+    return _ORIGINAL.fullmatch(relative) is not None
+
+
+def original_lines(root, relative, *, cache=None):
+    expected = root / relative
+    if cache is not None and expected in cache:
+        return cache[expected]
+    path, lines = Inbox(root).original_text(relative.stem)
+    if path != expected:
+        raise storage.ConflictError("Путь не совпадает с сохранённым оригиналом.")
+    if cache is not None:
+        cache[path] = lines
+    return lines
 
 
 def date_spans(line):
@@ -31,7 +48,7 @@ def _source_shape(relative, allow_originals):
     if not isinstance(relative, str) or not relative or "\\" in relative or any(ord(c) < 32 for c in relative):
         raise ValueError("Укажите путь к заметке или проекту внутри хранилища.")
     path = PurePosixPath(relative)
-    if allow_originals and _ORIGINAL.fullmatch(relative):
+    if allow_originals and is_original_path(relative):
         return path
     if (path.as_posix() != relative or len(path.parts) < 2 or path.parts[0] not in ("Notes", "Projects")
             or path.suffix.lower() != ".md" or any(p.startswith(".") for p in path.parts)):
@@ -65,14 +82,7 @@ def verify_source_line(root, item, *, records=None, allow_originals=False):
     if type(number) is not int or number < 1:
         raise ValueError("Укажите положительный номер строки источника.")
     if relative.parts[0] == "Sources":
-        if records is not None and path in records:
-            lines = records[path]
-        else:
-            original, lines = Inbox(root).original_text(relative.stem)
-            if original != path:
-                raise storage.ConflictError("Путь не совпадает с сохранённым оригиналом.")
-            if records is not None:
-                records[path] = lines
+        lines = original_lines(root, relative, cache=records)
         if number > len(lines):
             raise ValueError("Укажите существующую строку оригинала.")
         line_text = lines[number - 1]
@@ -88,7 +98,7 @@ def verify_source_line(root, item, *, records=None, allow_originals=False):
     if number < record["body_start"]:
         fragment = next((s for _, s in query._state_sources(root, path, record) if s["start"] == number), None)
         if not fragment:
-            raise ValueError("В шапке проекта доступны только статус, срок и следующий шаг.")
+            raise ValueError("В шапке проекта доступны статус, срок, следующий шаг и владелец.")
     else:
         fragment = query.source_fragment(root, path, record, number)
     line_text = next(row["text"] for row in fragment["lines"] if row["n"] == number)
@@ -106,14 +116,34 @@ def _verified(item, identifier, fingerprint, line_text):
     return source, line_text
 
 
-def verify_sources(root, provided, *, allow_originals=False):
+def _completion_date_in_quote(date, quote, line):
+    """Accept one matching date, including a day and month originally recorded without a year."""
+    dates = date_spans(line)
+    for match in _DAY_MONTH.finditer(line):
+        # A quotation ending before the year cannot discard a contradictory year in the source.
+        if not any(start <= match.start() < end for start, end in dates):
+            month = _MONTHS.index(match[2].lower()) + 1
+            dates[match.span()] = f"{date[:4]}-{month:02}-{int(match[1]):02}"
+    for quoted in re.finditer(re.escape(quote), line):
+        found = {value for (start, end), value in dates.items() if quoted.start() <= start and end <= quoted.end()}
+        if found == {date}:
+            return True
+    return False
+
+
+def verify_sources(root, provided, *, allow_originals=False, completion_date=None):
     if not isinstance(provided, list) or len(provided) > 8:
         raise ValueError("Укажите до восьми ссылок на отдельные строки.")
     sources = []
+    confirmed_date = False
     for item in provided:
-        source, _ = verify_source_line(root, item, allow_originals=allow_originals)
+        source, line = verify_source_line(root, item, allow_originals=allow_originals)
+        if completion_date and _completion_date_in_quote(completion_date, source["quote"], line):
+            confirmed_date = True
         if source not in sources:
             sources.append(source)
+    if completion_date and not confirmed_date:
+        raise ValueError("Укажите цитату с однозначной датой завершения или явное подтверждение владельца.")
     return sources
 
 
@@ -137,7 +167,7 @@ def resolve_source(root, reference, *, records=None, allow_originals=False):
         source, _ = verify_source_line(root, ref, records=records, allow_originals=allow_originals)
         return {**source, "href": ref["href"]}
     except (OSError, ValueError):
-        if _ORIGINAL.fullmatch(ref["path"]):
+        if is_original_path(ref["path"]):
             # An immutable original has no replacement card or moved passage.
             raise
         record, fragment = query.WorkspaceQuery(root, include_people=False).open_citation(ref)

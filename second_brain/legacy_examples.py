@@ -58,7 +58,7 @@ def _family(root, home, catalog):
         if _read(root, "Notes/Сверка восстановления Маяка.md"):
             return "gantt"
         return "planning"
-    if _read(root, "Inbox/00 — Знакомство.md"):
+    if _read(root, "Inbox/00 — Знакомство.md") or _read(root, "Archive/Inbox/00 — Знакомство.md"):
         return "teams" if _read(root, "People/Groups/Команда запуска.md") else "inbox"
     return "examples"
 
@@ -155,6 +155,9 @@ def legacy_seed(root):
     for path, data in template.items():
         relative = _IDS.sub(substitute, path.encode()).decode()
         current = _read(root, relative)
+        if not current and relative.startswith("Archive/Inbox/"):
+            relative = relative[len("Archive/"):]
+            current = _read(root, relative)
         if not current:
             continue
         original = _early_header(_IDS.sub(substitute, data), current)

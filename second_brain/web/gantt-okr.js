@@ -7,7 +7,7 @@ import {activityCatalog} from "./project-activity.js";
 
 const catalogTitle = "Цели и ключевые результаты";
 export function okrLink(ui, planId) {
-  return ui.link(planId ? catalogTitle : "Проектная деятельность", planId ? boardURL(planId) : "#activity", "text-link");
+  return ui.link(planId ? catalogTitle : "Проекты и Гант", planId ? boardURL(planId) : "#activity", "text-link");
 }
 
 async function boardPage(ui, view, planId, planURL) {
@@ -29,7 +29,7 @@ async function boardPage(ui, view, planId, planURL) {
     head.classList.add("okr-period-head");
     const status = node("p", "gantt-status", message); status.setAttribute("role", "status");
     const content = node("section", "okr-directory");
-    view.replaceChildren(link("← Проектная деятельность", "#activity", "back-link"), head, status, content);
+    view.replaceChildren(link("← Проекты и Гант", "#activity", "back-link"), head, status, content);
     const all = objectives.flatMap(row => row.results);
     const initiatives = new Set(all.flatMap(row => row.taskIds));
     const bar = node("div", "okr-directory-bar");

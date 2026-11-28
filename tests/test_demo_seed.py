@@ -7,7 +7,7 @@ from unittest.mock import patch
 import uuid
 
 from examples import gantt_vault, inbox_vault, okr_vault, planning_vault, working_vault
-from second_brain import legacy_examples, storage
+from second_brain import demo_cleanup, legacy_examples, storage
 from second_brain.demo import DemoVault
 from second_brain.examples import create_examples
 
@@ -53,6 +53,37 @@ class DemoSeedTests(unittest.TestCase):
         self.assertEqual(entries, recovered)
         self.assertNotEqual(recovered[changed], sha256((self.root / changed).read_bytes()).hexdigest())
         self.assertNotIn(own.relative_to(self.root).as_posix(), recovered)
+
+    def test_reviewed_example_archive_is_part_of_the_seed_and_cleanup_is_repeatable(self):
+        inbox_vault.generate(self.root)
+        archived = "Archive/Inbox/00 — Знакомство.md"
+        seed_path = self.root / ".second-brain-demo/seed.json"
+        seed = json.loads(seed_path.read_bytes())
+        digest = sha256((self.root / archived).read_bytes()).hexdigest()
+        self.assertEqual(seed["files"][archived], digest)
+        # Simulate a demo seeded by an earlier generator, then upgraded by
+        # inbox-archive. The receipt in the old seed proves the move.
+        seed["files"]["Inbox/00 — Знакомство.md"] = seed["files"].pop(archived)
+        seed_path.write_text(json.dumps(seed))
+        preview = demo_cleanup.preview(self.root)
+        self.assertEqual((preview["removeCount"], preview["keepCount"]), (len(seed["files"]), 0))
+        result = demo_cleanup.apply(self.root, preview["revision"])
+        self.assertFalse((self.root / archived).exists())
+        self.assertEqual(demo_cleanup.apply(self.root, preview["revision"]), result)
+
+    def test_legacy_inbox_generators_recognized_before_and_after_archive_move(self):
+        archived = "Archive/Inbox/00 — Знакомство.md"
+        incoming = "Inbox/00 — Знакомство.md"
+        for teams in (False, True):
+            with self.subTest(teams=teams):
+                root = inbox_vault.generate(self.root / str(teams), with_teams=teams)
+                (root / ".second-brain-demo/seed.json").unlink()
+                digest = sha256((root / archived).read_bytes()).hexdigest()
+                self.assertEqual(legacy_examples.legacy_seed(root)[archived], digest)
+                for path in (root / "Archive/Inbox").iterdir():
+                    path.rename(root / "Inbox" / path.name)
+                self.assertEqual(legacy_examples.legacy_seed(root)[incoming], digest)
+                self.assertTrue(demo_cleanup.preview(root)["available"])
 
     def test_old_catalog_evidence_survives_custom_home_and_excludes_a_replacement(self):
         demo = DemoVault(self.root)

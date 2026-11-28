@@ -14,6 +14,9 @@ def add_commands(commands):
     capture_file.add_argument("file", type=Path, help="путь к файлу")
     inbox = commands.add_parser("inbox", help="перечислить тексты и вложения во входящих")
     _page_options(inbox)
+    archive = commands.add_parser("inbox-archive", help="показать или перенести полностью разобранные файлы в Archive/Inbox")
+    archive.add_argument("--apply", action="store_true", help="перенести все проверенные файлы")
+    archive.add_argument("--limit", type=brief.result_limit, default=10, help="сколько путей показать в ответе")
     preview = commands.add_parser("inbox-read", help="прочитать строки одного входящего и его ревизию")
     preview.add_argument("path")
     preview.add_argument("--start", type=int, default=1)
@@ -24,9 +27,12 @@ def add_commands(commands):
     original.add_argument("--start", type=int, default=1)
     original.add_argument("--limit", type=int, default=20)
     original.add_argument("--column", type=int, default=1)
+    original.add_argument("--remaining", action="store_true", help="только строки, оставленные для Codex")
     process = commands.add_parser("inbox-process", help="сохранить оригинал и подтверждённые строки встречи")
     process.add_argument("path")
     process.add_argument("--revision", required=True)
+    process.add_argument("--remaining", choices=("queue", "finish"),
+                         help="queue — оставить остальные строки для Codex, finish — завершить разбор (по умолчанию)")
     participant = process.add_mutually_exclusive_group(required=True)
     participant.add_argument("--person", metavar="ID")
     participant.add_argument("--new-person", metavar="ИМЯ")
@@ -66,7 +72,7 @@ def add_commands(commands):
     resolve.add_argument("id")
     resolve.add_argument("clarification")
     rule = commands.add_parser("inbox-rule", help="сохранить правило направления из JSON на stdin")
-    for parser in (capture_text, capture_file, inbox, preview, original, process, people, person, correct, evidence,
+    for parser in (capture_text, capture_file, inbox, archive, preview, original, process, people, person, correct, evidence,
                    pending, rules, triage, apply, resolve, rule):
         parser.set_defaults(intake=True)
 
@@ -94,6 +100,9 @@ def run(root, args):
     from .inbox import Inbox
     from .people import People
 
+    if args.command == "inbox-archive":
+        from .inbox_archive import archive_inbox
+        return archive_inbox(root, apply=args.apply, limit=args.limit)
     if args.command == "inbox-text":
         from .capture import Capture, MAX_TEXT_BYTES
         raw = sys.stdin.buffer.read(MAX_TEXT_BYTES + 1)
@@ -132,7 +141,9 @@ def run(root, args):
     if args.command == "inbox-read":
         return _excerpt(Inbox(root).preview(args.path, args.start, args.limit), args.column)
     if args.command == "original":
-        return _excerpt(Inbox(root).original(args.source_id, args.start, args.limit), args.column)
+        inbox = Inbox(root)
+        read = inbox.remaining if args.remaining else inbox.original
+        return _excerpt(read(args.source_id, args.start, args.limit), args.column)
     if args.command == "inbox-process":
         person = {"id": args.person} if args.person else {"name": args.new_person, "new": True}
         if args.person_key or args.person_alias:
@@ -144,7 +155,10 @@ def run(root, args):
                 person["aliases"] = args.person_alias
         facts = [{"kind": kind, "direction": direction, "visibility": visibility, "line": int(line), "text": quote}
                  for kind, direction, visibility, line, quote in args.fact]
-        return Inbox(root).process({"path": args.path, "revision": args.revision, "person": person, "facts": facts})
+        request = {"path": args.path, "revision": args.revision, "person": person, "facts": facts}
+        if args.remaining is not None:
+            request["remaining"] = args.remaining
+        return Inbox(root).process(request)
     if args.command == "people":
         return People(root).candidate_page(args.match, limit=args.limit,
                                            direction_id=args.direction, offset=args.offset)

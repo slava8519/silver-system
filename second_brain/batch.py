@@ -13,7 +13,6 @@ from .routing import Routing
 
 _MARKER = "<!-- inbox-batch: "
 _FIRST = "initial"
-_HEADING = re.compile(r"^\s{0,3}#{1,6}(?:\s|$)")
 _DECISION_FIELDS = {"person": ("direction", "fact_kind", "visibility"),
                     "project": ("direction", "project", "field", "expected_revision", "value"),
                     "project_event": ("direction", "project", "expected_revision")}
@@ -121,10 +120,15 @@ class Batch:
                 try:
                     raw = self.inbox._receipt_bytes(self.inbox._receipt(path.stem), path.stem)
                     jobs, questions = _journal(raw, path.stem)
-                    if questions or any(not job["done"] for job in jobs.values()):
+                    remainder = inbox.manual_remainder(raw)
+                    if remainder or questions or any(not job["done"] for job in jobs.values()):
                         archived = self.inbox._original(path.stem)
                         if inbox._file_digest(archived)[0] != path.stem:
                             raise storage.ConflictError("Архивный оригинал изменился. Проверьте сохранённую версию.")
+                        if remainder:
+                            remainder = {"path": remainder["path"], "revision": path.stem, "status": "remaining",
+                                         "source_path": archived.relative_to(self.root).as_posix(),
+                                         "remainingLines": len(remainder["lines"])}
                 except (OSError, ValueError) as error:
                     receipt_path = path.relative_to(self.root).as_posix()
                     source = ""
@@ -136,8 +140,8 @@ class Batch:
                     damaged = {"id": identifier, "kind": "triage", "status": "damaged",
                                "reason": str(error), "revision": path.stem, "path": receipt_path,
                                "receipt_path": receipt_path, "source_path": source, "line": 0, "quote": ""}
-                    jobs, questions = {}, {identifier: damaged}
-                yield path.stem, jobs, questions
+                    jobs, questions, remainder = {}, {identifier: damaged}, None
+                yield path.stem, jobs, questions, remainder
 
     @staticmethod
     def _pending_from_journal(digest, jobs, questions):
@@ -162,8 +166,10 @@ class Batch:
 
     def pending(self):
         result, seen = [], set()
-        for digest, jobs, questions in self._receipts():
+        for digest, jobs, questions, remainder in self._receipts():
             seen.add(digest)
+            if remainder:
+                result.append(remainder)
             result.extend(self._pending_from_journal(digest, jobs, questions))
         for path in self.inbox._files():
             attachment = path.suffix.lower() not in inbox.EXTENSIONS
@@ -191,7 +197,7 @@ class Batch:
         return result
 
     def triage(self):
-        return [item for _, _, questions in self._receipts() for item in questions.values()]
+        return [item for _, _, questions, _ in self._receipts() for item in questions.values()]
 
     def _append(self, path, digest, event, label=""):
         previous = self.inbox._receipt_bytes(path, digest)
@@ -204,6 +210,9 @@ class Batch:
                     f'source_id: "{digest}"\ninbox_path: {relative}\n---\n\n# Разбор входящего\n\n{original}\n')
         else:
             text = previous.decode("utf-8")
+            if event["op"] == "begin" and event["job"] == _FIRST and inbox._REMAINDER in text:
+                # Publish the batch job and retire the manual selection in the same receipt write.
+                text = inbox.without_remainder(text)
         newline = "\r\n" if text.startswith("---\r\n") else "\n"
         rows = [people._marker(_MARKER, event)]
         if label:
@@ -315,7 +324,7 @@ class Batch:
         return {"path": path.relative_to(self.root).as_posix()}
 
     @staticmethod
-    def _actions(actions, raw, question, digest):
+    def _actions(actions, raw, question, digest, remaining=None):
         try:
             lines = inbox._lines(raw)
         except ValueError as error:
@@ -326,6 +335,8 @@ class Batch:
             if actions:
                 raise ValueError("Для нечитаемого файла передайте пустой список действий.")
             return [{"kind": "triage", "line": 0, "quote": "", "reason": str(error)}]
+        if remaining and max(remaining) > len(lines):
+            raise storage.ConflictError("Квитанция указывает на отсутствующую строку оригинала.")
         covered = set()
         for action in actions:
             if not isinstance(action, dict) or action.get("kind") not in (*_DECISION_FIELDS, "triage", "context"):
@@ -336,6 +347,8 @@ class Batch:
                 raise ValueError("Проверьте номер строки и дословную цитату в каждом действии.")
             if question and (number != question["line"] or quote not in question["quote"]):
                 raise ValueError("Уточнение относится только к исходному отложенному фрагменту.")
+            if remaining is not None and number not in remaining:
+                raise storage.ConflictError("Эта строка не входит в оставшиеся для разбора. Перечитайте очередь.")
             if action["kind"] == "triage" and not people._single_line(action.get("reason")):
                 raise ValueError("Для вопроса владельцу нужна причина.")
             covered.add(number)
@@ -344,11 +357,10 @@ class Batch:
             if not actions:
                 raise ValueError("Укажите действие для уточнённого фрагмента.")
             return reviewed
-        has_body = any(line.strip() and not _HEADING.match(line) for line in lines)
-        skipped = [{"kind": "triage", "line": num, "quote": line,
+        candidates = inbox.review_lines(lines) if remaining is None else remaining
+        skipped = [{"kind": "triage", "line": num, "quote": lines[num - 1],
                     "reason": "Для этой строки не указано подтверждённое действие."}
-                   for num, line in enumerate(lines, 1) if num not in covered and line.strip()
-                   and not (has_body and _HEADING.match(line))]
+                   for num in sorted(candidates - covered)]
         return [*reviewed, *skipped]
 
     def _person(self, action, source, incoming, raw, owner_reviewed):
@@ -400,9 +412,9 @@ class Batch:
         return result
 
     def apply(self, plan):
-        from .vault_check import check_after_intake
+        from .inbox_archive import finish_review
         result = self._apply(plan)
-        return {**result, "check": check_after_intake(self.root, result["revision"])}
+        return {**result, **finish_review(self.inbox, result["path"], result["revision"])}
 
     def _apply(self, plan):
         if (not isinstance(plan, dict) or plan.keys() - {"path", "revision", "actions", "triage_id"}
@@ -418,11 +430,12 @@ class Batch:
         with storage._write_lock(self.root):
             previous = self.inbox._receipt_bytes(receipt, digest)
             jobs, questions = _journal(previous, digest)
-            if previous and not jobs:
+            remainder = inbox.manual_remainder(previous)
+            if previous and not jobs and not remainder:
                 raise storage.ConflictError("Этот источник уже разобран вручную.")
             raw = None
-            if jobs:
-                first = jobs[_FIRST]
+            if jobs or remainder:
+                first = jobs[_FIRST] if jobs else remainder
                 incoming = self.root / first["path"]  # An archived review uses this only as its source label.
                 original = self.inbox._original(digest)
             else:
@@ -438,7 +451,7 @@ class Batch:
                 else:
                     self._attachment_actions(plan["actions"], None)
                     original = self.inbox._archive_attachment(incoming, digest)
-            elif not jobs:
+            elif not jobs and not remainder:
                 raw = incoming.read_bytes()
                 if inbox._digest(raw) != digest:
                     raise storage.ConflictError("Входящий изменился. Перечитайте его и проверьте строки.")
@@ -456,7 +469,8 @@ class Batch:
                 if name != _FIRST and (not question or question["status"] != "ready"):
                     raise storage.ConflictError("Для повторного разбора дождитесь уточнения владельца.")
                 actions = (self._attachment_actions(plan["actions"], question) if attachment
-                           else self._actions(plan["actions"], raw, question, digest))
+                           else self._actions(plan["actions"], raw, question, digest,
+                                              set(remainder["lines"]) if remainder else None))
                 if not original.exists():
                     with storage._staged(original, raw) as staged:
                         os.link(staged, original)

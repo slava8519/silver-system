@@ -10,8 +10,8 @@ import stat
 import sys
 
 
-RUNTIME_PARTS = ("second_brain", "examples", "docs", "plugins", ".agents/skills",
-                 "README.md", "ROADMAP.md")
+RUNTIME_PARTS = ("second_brain", "examples", "docs", "plugins", "README.md", "ROADMAP.md")
+SKILLS = Path(".agents/skills")
 PLUGIN_DIR = ".obsidian/plugins/obsidian-gantt"
 PLUGIN_FILES = ("main.js", "manifest.json", "server.js", "styles.css")
 STATUSES = ("identical", "upstream", "local", "conflict", "unknown", "unsafe")
@@ -87,12 +87,33 @@ def ignore(name):
     return name in {".git", "__pycache__", ".DS_Store"} or name.endswith((".pyc", ".pyo"))
 
 
+def packaged_markdown(program):
+    """Map packaged Markdown bytes to their source bytes using the installed receipt."""
+    path = member(program, "package-manifest.json")
+    if kind(path) == "missing":
+        return {}
+    if kind(path) != "file":
+        raise ValueError("Недоступен манифест установленного пакета.")
+    manifest = json.loads(path.read_bytes())
+    if (not isinstance(manifest, dict) or manifest.get("schema_version") != 1
+            or not isinstance(manifest.get("files"), dict) or not isinstance(manifest.get("source_files", {}), dict)):
+        raise ValueError("Неизвестный формат манифеста установленного пакета.")
+    mapped = {}
+    for name, source in manifest.get("source_files", {}).items():
+        installed = manifest["files"].get(name)
+        if not name.endswith(".md") or not all(isinstance(value, str) and len(value) == 64 for value in (installed, source)):
+            raise ValueError("Некорректная контрольная сумма Markdown в манифесте.")
+        mapped[name] = bytes.fromhex(installed), bytes.fromhex(source)
+    return mapped
+
+
 class Comparison:
     def __init__(self, args):
         self.args = args
         self.counts = Counter({name: 0 for name in STATUSES})
         self.items = []
         self.differences = 0
+        self.packaged = {}
 
     def record(self, component, display, status, action):
         self.counts[status] += 1
@@ -111,7 +132,7 @@ class Comparison:
             if types == {"directory"}:
                 names = set()
                 # Only release-owned subtrees belong to the installed skill set.
-                skill_catalog = relative == Path(".agents/skills")
+                skill_catalog = relative == SKILLS
                 for path in (paths[1:] if skill_catalog else paths):
                     if kind(path) == "directory":
                         names.update(entry.name for entry in path.iterdir() if not ignore(entry.name)
@@ -123,6 +144,14 @@ class Comparison:
                 return
             if types == {"file"}:
                 have, want, old = [file_digest(path) for path in paths]
+                installed_path = Path(".runtime") / relative if component == "runtime" else display
+                hashes = self.packaged.get(installed_path.as_posix())
+                if hashes:
+                    packaged, source = hashes
+                    if want == source:
+                        want = packaged
+                    if old == source:
+                        old = packaged
                 status, action = classify(have, want, old, self.args.base is not None)
             else:
                 status, action = "unsafe", "review"
@@ -163,6 +192,10 @@ class Comparison:
             if any(source is not None and program.samefile(source) for source in (args.target, args.base)):
                 raise ValueError("Для сравнения нужна копия исходников отдельно от установленной программы.")
             components["runtime"] = "present"
+            try:
+                self.packaged = packaged_markdown(program)
+            except (OSError, ValueError):
+                self.record("runtime", prefix / "package-manifest.json", "unsafe", "review")
             for part in RUNTIME_PARTS:
                 try:
                     target_type = kind(member(args.target, part))
@@ -172,6 +205,15 @@ class Comparison:
                 if target_type != "missing" and installed_type != target_type:
                     missing_parts.append(part)
                 self.walk("runtime", prefix / part, (program, args.target, args.base), Path(part))
+            if program != vault:
+                # Older bundles and separate source checkouts may have their own
+                # copy. The canonical single-vault layout installs only the active one.
+                try:
+                    program_skills = kind(member(program, SKILLS))
+                except ValueError:
+                    program_skills = "unsafe"
+                if program_skills != "missing":
+                    self.walk("runtime", prefix / SKILLS, (program, args.target, args.base), SKILLS)
             try:
                 entry_point = kind(member(program, "second_brain/__main__.py"))
             except ValueError:
@@ -185,7 +227,7 @@ class Comparison:
         elif program is None:
             components["runtime"] = "unsafe"
 
-        skills = Path(".agents/skills")
+        skills = SKILLS
         try:
             sources = [member(root, skills) for root in (args.target, args.base)]
             names = set()
@@ -197,11 +239,15 @@ class Comparison:
             active = member(vault, skills)
             if kind(active) not in {"missing", "directory"}:
                 raise ValueError("Недоступен каталог навыков.")
-            if any(kind(member(active, name)) != "missing" for name in names):
+            has_active = any(kind(member(active, name)) != "missing" for name in names)
+            if has_active:
                 components["skills"] = "present"
-                if program != vault:
-                    for name in sorted(names):
-                        self.walk("skills", skills / name, (vault, args.target, args.base), skills / name)
+            canonical = runtime_type == "directory" and program in (vault, vault / ".runtime")
+            if names and canonical and not has_active:
+                installation = "partial"
+            if has_active or canonical:
+                for name in sorted(names):
+                    self.walk("skills", skills / name, (vault, args.target, args.base), skills / name)
         except (OSError, ValueError):
             components["skills"] = "unsafe"
             self.record("skills", skills, "unsafe", "review")

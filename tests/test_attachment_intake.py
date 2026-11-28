@@ -42,7 +42,8 @@ class AttachmentIntake(unittest.TestCase):
             first, repeated = pool.map(self.batch.apply, [plan, plan])
         self.assertEqual(first, repeated)
         self.assertEqual(first["applied"], [])
-        (self.root / item["path"]).unlink()
+        self.assertFalse((self.root / item["path"]).exists())
+        self.assertEqual((self.root / "Archive" / item["path"]).read_bytes(), drawing)
         raw, data = self.inbox.attachment(item["revision"])
         self.assertEqual((data, raw.suffix), (drawing, ".svg"))
         with self.assertRaises(ValueError):
