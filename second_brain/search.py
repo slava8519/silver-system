@@ -6,7 +6,7 @@ import unicodedata
 from pathlib import Path
 from typing import Optional
 
-from . import search_index
+from . import search_index, search_sections
 from .search_index import rebuild
 from .storage import KINDS
 
@@ -52,28 +52,26 @@ def _match_query(query):
     return " OR ".join(f'"{term}"*' for term in terms)
 
 
-def visible_body_lines(record, hidden=None):
-    """Keep file coordinates while excluding the project log's internal bookkeeping."""
+def visible_body_lines(record, *, history=None):
+    """All citable lines for source views, or just one search scope."""
     if "candidate_lines" in record:
         return iter(record["candidate_lines"])
-    if hidden is None and record["type"] == "project":
-        from .project_updates import projection
-        _, hidden = projection(record)
-    lines = enumerate(record["body"].splitlines(), record["body_start"])
-    return ((n, line) for n, line in lines if n not in hidden) if hidden else lines
+    return ((number, text) for number, text, past in search_sections.lines(record)
+            if history is None or past == history)
 
 
 def _source_lines(path, record, hidden):
-    found = False
-    for number, line in visible_body_lines(record, hidden):
+    found_current = False
+    for number, line, history in search_sections.lines(record, hidden=hidden):
         if line.strip() and line.strip() != "# " + record["title"]:
-            found = True
-            yield number, line
-    if not found:
+            if not history:
+                found_current = True
+            yield number, line, history
+    if not found_current and record["type"] != "project_history":
         # Empty cards still have a citable title in their Markdown source.
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if line.startswith("title:") or line.strip() == "# " + record["title"]:
-                yield number, line
+                yield number, line, False
                 return
 
 
@@ -83,7 +81,7 @@ def refresh_index(root: Path):
         return rebuilt
 
 
-def _results(db, expression, limit, record_id, name):
+def _results(db, expression, limit, record_id, name, history):
     db.row_factory = sqlite3.Row
     rows = db.execute("""
         WITH candidates AS (
@@ -92,18 +90,21 @@ def _results(db, expression, limit, record_id, name):
                    row_number() OVER (PARTITION BY d.key ORDER BY
                        (l.brief AND instr(d.brief_names, ?) > 0) DESC, rank, l.line) AS position
             FROM fragments JOIN lines l ON l.key=fragments.rowid JOIN documents d ON d.key=l.document
-            WHERE fragments MATCH ? AND (? IS NULL OR d.id = ?) AND rank MATCH 'bm25(4,7,1)'
+            WHERE fragments MATCH ? AND l.history=? AND (? IS NULL OR d.id = ? OR d.project_id = ?)
+                  AND rank MATCH 'bm25(4,7,1)'
         )
         SELECT path, id, title, line AS start, line AS end, text FROM candidates WHERE position = 1
         ORDER BY exact_brief DESC, score, path LIMIT ?
-    """, (name, name, expression, record_id, record_id, limit))
+    """, (name, name, expression, history, record_id, record_id, record_id, limit))
     return [dict(row) for row in rows]
 
 
-def search(root: Path, query: str, limit: int = 5, *, record_id: Optional[str] = None) -> list[dict]:
+def search(root: Path, query: str, limit: int = 5, *, record_id: Optional[str] = None, history=False) -> list[dict]:
     """Return the best matching source line per file. The consumer interprets it."""
     if not 1 <= limit <= 20:
         raise ValueError("Количество результатов должно быть от 1 до 20.")
+    if type(history) is not bool:
+        raise ValueError("Укажите логическое значение для history.")
     expression = _match_query(query)
     if not expression:
         return []
@@ -111,16 +112,23 @@ def search(root: Path, query: str, limit: int = 5, *, record_id: Optional[str] =
     name = "\x1f" + " ".join(word_stems(query)) + "\x1f"
     try:
         with search_index.current(root) as (db, _):
-            return _results(db, expression, limit, record_id, name)
+            return _results(db, expression, limit, record_id, name, history)
     except sqlite3.DatabaseError:
         rebuild(root)  # Metadata can survive damage to the full-text table.
     with search_index.current(root) as (db, _):
-        return _results(db, expression, limit, record_id, name)
+        return _results(db, expression, limit, record_id, name, history)
 
 
 def fragment(root: Path, path: str, start: int, end: int) -> str:
     """Read a note range or one explicitly scoped person, team or profile citation."""
     relative = Path(path)
+    from . import archive_reader
+    if archive_reader.archive_path(relative):
+        record = archive_reader.read_path(root, relative)
+        lines = record["raw"].splitlines()
+        if not 1 <= start <= end <= len(lines) or end - start >= 80:
+            raise ValueError("Укажите существующий диапазон до 80 строк.")
+        return "\n".join(lines[start-1:end])
     if relative.as_posix() == "Settings/Owner.md" or relative.parts[:1] == ("People",):
         from .teams import Teams
         if ".." in relative.parts:

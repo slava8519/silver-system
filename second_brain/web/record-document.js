@@ -24,12 +24,12 @@ export function recordDocument(record, markdown, ui, {omitTitle, nativeLink, rep
     const target = localNote(record.path, href, {wiki});
     if (!target) return label;
     const shortName = wiki && /^[^/#]+(?:#|$)/.test(href);
-    const cardFolder = /^(?:Directions|Notes|Projects)\//.test(target.path);
+    const cardFolder = /^(?:Directions|Notes|Projects|Archive\/ProjectHistory)\//.test(target.path);
     let url;
     if (!ui.compact && (cardFolder || shortName)) {
       const query = new URLSearchParams();
       if (target.subpath) query.set("section", target.subpath.slice(1));
-      if (target.path === record.path && record.id) {
+      if (target.path === record.path && record.id && record.type !== "markdown") {
         url = "#record/" + encodeURIComponent(record.id) + (query.size ? "?" + query : "");
       } else {
         query.set("path", cardFolder ? target.path : target.path.split("/").pop());

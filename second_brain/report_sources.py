@@ -3,7 +3,7 @@
 from pathlib import PurePosixPath, PureWindowsPath
 import re
 
-from . import evidence, storage
+from . import archive_reader, evidence, storage
 from .query import _line_ref, _state_sources
 
 
@@ -37,6 +37,8 @@ def _identity(lines):
 
 def _read(root, relative, *, originals=None):
     relative = _relative(relative)
+    if archive_reader.archive_path(relative):
+        return archive_reader.read_path(root, relative)["raw"].splitlines()
     if evidence.is_original_path(relative.as_posix()):
         return evidence.original_lines(root, relative, cache=originals)
     path = storage._inside(root, relative)
@@ -92,14 +94,35 @@ def verify(root, provided):
         except FileNotFoundError as error:
             raise ValueError(f"Не удалось найти источник «{relative}». Проверьте путь от корня хранилища.") from error
         number = item.get("line")
+        if (type(number) is int and number > 0 and item.get("id") and item.get("ref") and item.get("quote")
+                and any(s.startswith(archive_reader.POINTER) for s in lines)
+                and _project_field_refs(root, relative, lines) is not None):
+            project = storage.read_record(root / relative)
+            if (item["id"] == project["id"] and number >= project["body_start"]
+                    and item.get("archivePlan") != archive_reader.latest_plan(project)):
+                checked = resolve(root, item, "")
+                if not checked["available"]:
+                    raise storage.ConflictError("Строка источника изменилась. Перечитайте основание.")
+                relative, number = checked["path"], checked["line"]
+                if archive_reader.archive_path(relative):
+                    item = {**item, "id": archive_reader.read_path(root, relative)["id"]}
+                lines = _read(root, relative, originals=originals)
         if type(number) is not int or not 1 <= number <= len(lines):
             raise ValueError(f"Строка источника не найдена: {relative}.")
         text = lines[number - 1]
+        original = evidence.is_original_path(relative)
+        identity = PurePosixPath(relative).stem if original else _identity(lines)
+        if archive_reader.archive_path(relative):
+            archived = archive_reader.read_path(root, relative)
+            if number not in archive_reader.visible_lines(archived):
+                raise ValueError("Укажите строку записи в квартальном архиве.")
+            identity = archived["id"]
+            original_text = archive_reader.original_citation(archived, number, item.get("ref"))
+            if original_text is not None:
+                text = original_text
         quote = item.get("quote", text.strip())
         if not isinstance(quote, str) or not quote.strip() or len(quote) > 600 or quote not in text:
             raise ValueError(f"Нужна точная цитата до 600 символов: {relative}, строка {number}.")
-        original = evidence.is_original_path(relative)
-        identity = PurePosixPath(relative).stem if original else _identity(lines)
         line_ref = _line_ref(text)
         supplied_id = item.get("id", identity)
         if supplied_id != identity and not (original and supplied_id and supplied_id == _identity(lines)):
@@ -114,6 +137,13 @@ def verify(root, provided):
         if item.get("ref", ref) not in (ref, line_ref) or item.get("scope", scope) != scope:
             raise storage.ConflictError("Строка источника изменилась. Перечитайте основание.")
         source = {"path": relative, "line": number, "quote": quote, "ref": ref}
+        if (identity and scope != "field" and any(s.startswith(archive_reader.POINTER) for s in lines)
+                and _project_field_refs(root, relative, lines) is not None):
+            project = storage.read_record(root / relative)
+            if number >= project["body_start"]:
+                plan = archive_reader.latest_plan(project)
+                if plan:
+                    source["archivePlan"] = plan
         if scope:
             source["scope"] = scope
         if identity:
@@ -130,6 +160,16 @@ def verify(root, provided):
 
 def _locate(root, saved, originals):
     relative = _relative(saved["path"])
+    if archive_reader.archive_path(relative):
+        part = archive_reader.read_path(root, relative)
+        if saved.get("id") and saved["id"] != part["id"]:
+            raise storage.ConflictError("ID квартального архива изменился.")
+        lines = part["raw"].splitlines()
+        number = saved["line"]
+        original = archive_reader.original_citation(part, number, saved["ref"])
+        if original is not None and number in archive_reader.visible_lines(part):
+            lines[number-1] = original
+        return saved["path"], lines
     if evidence.is_original_path(saved["path"]):
         lines = evidence.original_lines(root, relative, cache=originals)
         # Earlier Markdown reports used the original's embedded card ID, if present.
@@ -180,7 +220,6 @@ def resolve(root, saved, href, *, context=False, originals=None):
         scope = saved.get("scope")
         fields = _project_field_refs(root, path, lines)
         legacy_project = scope is None and saved.get("id") and saved["path"].startswith("Projects/")
-
         def matches_line(n):
             text = lines[n - 1]
             if scope == "field":
@@ -195,7 +234,29 @@ def resolve(root, saved, href, *, context=False, originals=None):
             return _line_ref(text) == saved["ref"]
 
         number = saved["line"]
-        if not 1 <= number <= len(lines) or not matches_line(number):
+        project = None
+        if fields is not None and scope != "field" and saved.get("id") and any(
+                s.startswith(archive_reader.POINTER) for s in lines):
+            project = storage.read_record(root / path, include_raw=True)
+        prior_rotation = (project is not None and number >= project["body_start"]
+                          and archive_reader.latest_plan(project) != saved.get("archivePlan"))
+        if prior_rotation:
+            matches = [n for n in range(project["body_start"], len(lines) + 1) if matches_line(n)]
+            selected, selected_record, number = archive_reader.citation_line(
+                root, root / path, project, number, saved["ref"], matches, saved.get("archivePlan"))
+            if selected_record["type"] == "project_history":
+                visible = archive_reader.visible_lines(selected_record)
+                original = archive_reader.original_citation(selected_record, number, saved["ref"])
+                if original is not None:
+                    visible[number] = original
+                text = visible[number]
+                if saved["quote"] not in text or (scope is None and text.startswith(_PROJECT_FIELD_PREFIXES)):
+                    return result
+                result.update(path=selected.relative_to(root).as_posix(), line=number, available=True)
+                if context:
+                    result["lines"] = [{"n": n, "text": visible[n]} for n in range(number-2, number+3) if n in visible]
+                return result
+        elif not 1 <= number <= len(lines) or not matches_line(number):
             matches = [n for n in range(1, len(lines) + 1) if matches_line(n)]
             if len(matches) != 1:
                 return result

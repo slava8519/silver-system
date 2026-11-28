@@ -179,7 +179,9 @@ import { mountCleanup } from "./demo-cleanup.js";
       fragment.textContent = "Открываем запись…";
       anchor.setAttribute("aria-expanded", "true");
       try {
-        const fresh = await api("citation", { id: item.id, line: source.start, ref: source.ref });
+        const fresh = await api("citation", {
+          id: source.id || item.id, line: source.start, ref: source.ref, archivePlan: source.archivePlan
+        });
         if (!wrapper.isConnected) return;
         source = fresh;
         label();

@@ -9,10 +9,11 @@ import { documentForm } from "./document-form.js";
 import { markdownEditor } from "./markdown-editor.js";
 import { editorDialogOpen, leaveEditor } from "./editor-dialog.js";
 import { recordDocument, recordSection } from "./record-document.js";
-import { projectUpdatesPanel } from "./project-updates.js";
+import { projectArchiveControl, projectEvents, projectUpdatesPanel } from "./project-updates.js";
 import { mountDirectionStates } from "./direction-states.js";
 import { mountInboxActivity } from "./inbox-activity.js";
 import { renderOverviewCommands } from "./overview-commands.js";
+import { renderOverviewFolders } from "./overview-folders.js";
 import { reportsView } from "./reports.js";
 import { showVaultCheck } from "./vault-check.js";
 
@@ -205,7 +206,7 @@ import { showVaultCheck } from "./vault-check.js";
     const sidebar = node("div", "overview-sidebar");
     const cleanup = node("div", "overview-maintenance");
     cleanup.hidden = true;
-    sidebar.append(renderOverviewCommands({node, button}, data.root), folderPanel(), cleanup);
+    sidebar.append(renderOverviewCommands({node, button}, data.root), renderOverviewFolders({node, counted}, data.folders), cleanup);
     primary.append(arrivals, states);
     layout.append(primary, sidebar);
     main.append(stats, layout);
@@ -253,22 +254,6 @@ import { showVaultCheck } from "./vault-check.js";
     main.append(sectionNode);
   }
 
-  function folderPanel() {
-    const folders = node("details", "work-panel overview-folders");
-    folders.append(node("summary", "work-heading", "Папки хранилища"));
-    folders.append(node("p", "muted", "Счётчик включает карточки во вложенных папках."));
-    const chips = node("ul","folder-set");
-    for (const folder of data.folders) {
-      const li = node("li");
-      const count = counted(folder.count, ["карточка", "карточки", "карточек"]);
-      li.setAttribute("aria-label", folder.path + " — " + count + ", включая вложенные папки");
-      li.append(node("code","",folder.path),node("span","",count));
-      chips.append(li);
-    }
-    folders.append(chips);
-    return folders;
-  }
-
   function recordFacts(record) {
     const facts = node("dl", "record-facts");
     for (const [key, caption] of Object.entries(fields)) {
@@ -283,6 +268,13 @@ import { showVaultCheck } from "./vault-check.js";
 
   async function recordPage(recordId, params, version, openEditor = false) {
     const selector = recordId ? {id:recordId} : {path:params.get("path"), short:params.get("short") || ""};
+    const full = params.get("view") === "full" || params.get("source") === "1" ||
+      ["line", "field", "section", "revision"].some(key => params.has(key));
+    if (!full) selector.view = "current";
+    if (recordId && params.has("revision") && /^[1-9]\d*$/.test(params.get("line") || "")) {
+      selector.revision = params.get("revision");
+      selector.line = params.get("line");
+    }
     const record = await api("record?" + new URLSearchParams(selector));
     const id = record.id;
     if (version !== pageVersion) return;
@@ -297,6 +289,7 @@ import { showVaultCheck } from "./vault-check.js";
       finally { edit.disabled = false; }
     }
     if (record.type !== "markdown") actions.push(link("Показать связи", "#map?" + new URLSearchParams({id}), "text-link"), edit);
+    if (record.type === "markdown" && record.project_id) actions.push(link("К проекту", recordURL(record.project_id), "text-link"));
     if (record.type === "project") actions.unshift(link("Гант проекта", "#project-gantt/" + encodeURIComponent(id), "button button-primary"));
     const header = pageHead((typeNames[record.type] || "Markdown") + " · " + record.vaultName, record.title, ...actions);
     header.classList.add("record-head");
@@ -310,54 +303,25 @@ import { showVaultCheck } from "./vault-check.js";
       meta.append(areaLine);
     }
     if (record.aliases?.length) meta.append(node("p","muted","Другие названия · " + record.aliases.join(", ")));
-    if (record.type === "project" && record.projectUpdates) {
-      panel.append(projectUpdatesPanel({node, button, link, notice, api, labelled, embedded}, record, () => go(recordURL(id))));
+    if (record.type === "project") {
+      meta.append(full ? link("К сводке проекта", recordURL(id), "text-link") :
+        link("Полный текст и история", recordURL(id, {view:"full"}), "text-link"));
+      const ui = {node, button, link, notice, api, labelled, counted, embedded};
+      if (!full) {
+        panel.append(projectUpdatesPanel(ui, record, () => go(recordURL(id))));
+      } else {
+        const history = node("details", "project-full-history");
+        history.append(node("summary", "text-link", "Хронология событий · " + record.projectUpdates.total),
+          projectEvents(ui, record, true));
+        panel.append(history, projectArchiveControl(ui, record, render));
+      }
+      panel.append(recordFacts(record));
     }
-    if (record.type === "project") panel.append(recordFacts(record));
-    const selectedField = params.get("field");
-    const requestedLine = Number(params.get("line"));
-    const outdated = params.has("revision") && params.get("revision") !== record.revision;
-    const selectedLine = record.fieldSources?.[selectedField]?.line ||
-      (!outdated && Number.isSafeInteger(requestedLine) && requestedLine > 0 && requestedLine <= record.raw.split(/\r?\n/).length
-        ? requestedLine : null);
-    if (outdated) panel.append(notice("Карточка изменилась после открытия обзора. Сверьте новую версию."),
-      link("Вернуться к обзору", "#overview", "text-link"));
-    if (fullWorkspace) meta.append(button("Открыть в Obsidian ↗", "intake-action",
-      () => openObsidianSource(record.path, selectedLine)));
-    if (selectedField && !selectedLine) panel.append(node("p","muted","Поле сейчас не задано."));
-    const sourceBox = node("details","record-source");
-    sourceBox.open = Boolean(selectedLine);
-    const sourceSummary = node("summary", "text-link", "Исходник" + (selectedLine ? " · строка " + selectedLine : ""));
-    sourceSummary.title = record.path;
-    sourceBox.append(sourceSummary, node("p", "record-path", record.path));
-    const lines = node("div", "source-lines");
-    function showSource() {
-      if (!sourceBox.open || lines.childElementCount) return;
-      record.raw.split(/\r?\n/).forEach((line,index) => {
-        const n = index + 1;
-        const row = node("div","source-line" + (n === selectedLine ? " highlight" : ""));
-        row.append(node("span","line-number",n),node("code","line-text",line || " "));
-        lines.append(row);
-      });
-    }
-    showSource();
-    sourceBox.addEventListener("toggle", showSource);
-    sourceBox.append(lines);
-    meta.append(sourceBox);
-    const displayBody = record.displayBody?.trimEnd() ?? record.body;
-    if (displayBody?.trim()) {
-      const body = recordDocument(record, displayBody, {link, embedded}, {omitTitle:record.title});
-      body.hidden = sourceBox.open;
-      sourceBox.addEventListener("toggle", () => { body.hidden = sourceBox.open; });
-      panel.append(body);
-    }
-    if (!record.body && !record.aliases?.length && record.type !== "project") panel.append(node("p","muted","Текст карточки пока пуст."));
     main.append(panel);
-    if (selectedLine && requestedLine) lines.querySelector(".highlight")?.scrollIntoView({block: "center"});
-    else if (params.get("section")) {
-      const heading = recordSection(main, params.get("section"));
-      if (heading) heading.scrollIntoView({block:"start"});
-      else meta.append(node("p", "muted", "Раздел «" + params.get("section") + "» не найден."));
+    if (record.type === "project" && !full) {
+      if (fullWorkspace) meta.append(button("Открыть в Obsidian ↗", "intake-action", () => openObsidianSource(record.path)));
+    } else {
+      showRecordText(record, params, panel, meta);
     }
     if (openEditor && edit.isConnected) await openCardEditor();
     if (!record.direction && record.type !== "direction") return;
@@ -365,10 +329,10 @@ import { showVaultCheck } from "./vault-check.js";
     if (record.type !== "direction") {
       const area = link("Открыть направление", recordURL(record.direction), "text-link");
       areaLine.append(area);
-      const context = await api("map?" + new URLSearchParams({action:"focus", id})).catch(() => null);
+      const context = await api("workspace/context?directions=1").catch(() => null);
       if (version !== pageVersion || !context) return;
-      const direction = context.groups.find(group => group.key === "directions")?.items[0];
-      if (direction && !direction.missing) area.textContent = direction.title;
+      const direction = context.directions.find(item => item.id === record.direction);
+      if (direction) area.textContent = direction.title;
       else area.replaceWith("Направление не найдено");
       return;
     }
@@ -392,6 +356,52 @@ import { showVaultCheck } from "./vault-check.js";
     if (count > links.childElementCount) links.append(link("Все связи · " + count, mapURL, "record-row text-link"));
     if (!count) links.append(node("p", "muted", "Связанных карточек пока нет."));
     shortcuts.before(links);
+  }
+
+  function showRecordText(record, params, panel, meta) {
+    const selectedField = params.get("field");
+    const requestedLine = record.resolvedLine || Number(params.get("line"));
+    const outdated = !record.resolvedLine && params.has("revision") && params.get("revision") !== record.revision;
+    const selectedLine = record.fieldSources?.[selectedField]?.line ||
+      (!outdated && Number.isSafeInteger(requestedLine) && requestedLine > 0 && requestedLine <= record.raw.split(/\r?\n/).length
+        ? requestedLine : null);
+    if (outdated) panel.append(notice("Карточка изменилась после открытия обзора. Сверьте новую версию."),
+      link("Вернуться к обзору", "#overview", "text-link"));
+    if (fullWorkspace) meta.append(button("Открыть в Obsidian ↗", "intake-action",
+      () => openObsidianSource(record.path, selectedLine)));
+    if (selectedField && !selectedLine) panel.append(node("p","muted","Поле сейчас не задано."));
+    const sourceBox = node("details","record-source");
+    sourceBox.open = Boolean(selectedLine) || params.get("source") === "1";
+    const sourceSummary = node("summary", "text-link", "Исходник" + (selectedLine ? " · строка " + selectedLine : ""));
+    sourceSummary.title = record.path;
+    sourceBox.append(sourceSummary, node("p", "record-path", record.path));
+    const lines = node("div", "source-lines");
+    function showSource() {
+      if (!sourceBox.open || lines.childElementCount) return;
+      record.raw.split(/\r?\n/).forEach((line,index) => {
+        const n = index + 1;
+        const row = node("div","source-line" + (n === selectedLine ? " highlight" : ""));
+        row.append(node("span","line-number",n),node("code","line-text",line || " "));
+        lines.append(row);
+      });
+    }
+    showSource();
+    sourceBox.addEventListener("toggle", showSource);
+    sourceBox.append(lines);
+    meta.append(sourceBox);
+    if (record.body?.trim()) {
+      const body = recordDocument(record, record.body, {link, embedded}, {omitTitle:record.title});
+      body.hidden = sourceBox.open;
+      sourceBox.addEventListener("toggle", () => { body.hidden = sourceBox.open; });
+      panel.append(body);
+    }
+    if (!record.body && !record.aliases?.length && record.type !== "project") panel.append(node("p","muted","Текст карточки пока пуст."));
+    if (selectedLine && requestedLine) lines.querySelector(".highlight")?.scrollIntoView({block: "center"});
+    else if (params.get("section")) {
+      const heading = recordSection(main, params.get("section"));
+      if (heading) heading.scrollIntoView({block:"start"});
+      else meta.append(node("p", "muted", "Раздел «" + params.get("section") + "» не найден."));
+    }
   }
 
   async function editPage(id, kind, params, version, trigger) {

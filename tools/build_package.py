@@ -27,7 +27,7 @@ RUNTIME_FILES = {
         planning_vault.py project_activity_vault.py report_vault.py scenarios.json working_vault.py
     """,
     "second_brain": """
-        __init__.py __main__.py batch.py brief.py capture.py check_records.py check_snapshots.py
+        __init__.py __main__.py archive_reader.py history_archive.py batch.py brief.py capture.py check_records.py check_snapshots.py
         check_sources.py cycles.py demo.py demo_cleanup.py dependencies.py direction_overview.py
         evidence.py examples.py gantt.py gantt_brief_format.py gantt_feedback.py gantt_group_cards.py
         gantt_groups.py inbox.py inbox_activity.py inbox_archive.py intake_cli.py legacy_examples.py markdown_sections.py okr.py
@@ -37,7 +37,7 @@ RUNTIME_FILES = {
         project_membership.py project_updates.py project_updates_cli.py query.py questions.py
         refresh.py refresh_people.py refresh_planning.py refresh_projects.py relation_map.py
         relation_map_cli.py report_cli.py report_defaults.py report_sources.py report_web.py
-        reports.py routing.py schedule.py search.py search_index.py storage.py teams.py teams_cli.py vault_check.py
+        reports.py routing.py schedule.py search.py search_index.py search_sections.py storage.py teams.py teams_cli.py vault_check.py
         webserver.py weekly_evidence.py weekly_report.py work_control.py workspace.py
     """,
     "second_brain/web": """
@@ -48,7 +48,7 @@ RUNTIME_FILES = {
         gantt-layers.js gantt-okr-detail.js gantt-okr-forms.js gantt-okr-source.js gantt-okr-tracking.js
         gantt-okr-values.js gantt-okr.js gantt-rows.js gantt-tree.js gantt-work-events.js gantt.css
         gantt.js inbox-activity.js index.html intake.js note-links.js obsidian-workspace.js overview-commands.js
-        overview.css project-activity.js project-participation.js project-updates.js record-document.js
+        overview-folders.js overview.css project-activity.js project-participation.js project-updates.js record-document.js
         relation-map-help.js relation-map.css relation-map.js report-document.js report-forms.js
         report-template-changes.js reports.css reports.js teams.js vault-check.js workspace.css
         workspace.html workspace.js

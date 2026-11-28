@@ -5,7 +5,7 @@ import tempfile
 import threading
 import unittest
 
-from second_brain import storage
+from second_brain import history_archive, storage
 from second_brain.cycles import Cycles
 from second_brain.okr import KeyResults
 from second_brain.planning import Planning
@@ -13,6 +13,20 @@ from second_brain.webserver import server
 
 
 class KeyResultWebTests(unittest.TestCase):
+    def test_source_picker_keeps_current_project_coordinates_after_rotation(self):
+        path = storage.create(self.root, "project", "Сад", body=(
+            "## История статусов\n### 2024-01-01\nПолив согласован.\n"
+            "## Текущий план\nПолив согласован.\n"))
+        identifier = storage.read_record(path)["id"]
+        options = dict(as_of="2026-11-28", min_kept=0)
+        plan = history_archive.rotate(self.root, identifier, **options)
+        history_archive.rotate(self.root, identifier, **options, apply=plan["revision"])
+        results = self.request("/api/plan/okr-source-lines?id=" + identifier + "&limit=20")["items"]
+        chosen, = (r for r in results if r["quote"] == "Полив согласован.")
+        self.assertEqual(chosen["archivePlan"], plan["revision"])
+        ref = self.request("/api/citation", data={"id": identifier, **chosen})
+        self.assertEqual((ref["path"], ref["start"]), (path.relative_to(self.root).as_posix(), chosen["line"]))
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)

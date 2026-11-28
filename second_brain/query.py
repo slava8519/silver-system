@@ -7,7 +7,7 @@ import re
 import sqlite3
 from urllib.parse import quote
 
-from . import questions, search_index, storage
+from . import archive_reader, questions, search_index, storage
 from .search import visible_body_lines
 
 
@@ -15,8 +15,10 @@ def _line_ref(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _source_link(record, number, ref):
-    return f"/source/{quote(record['id'], safe='')}?line={number}&ref={ref}#cited-line"
+def _source_link(record, number, ref, archive_plan=None):
+    plan = archive_plan or record.get("archivePlan")
+    suffix = "&archivePlan=" + quote(plan, safe="") if plan else ""
+    return f"/source/{quote(record['id'], safe='')}?line={number}&ref={ref}{suffix}#cited-line"
 
 
 def _state_sources(root, path, record):
@@ -35,24 +37,32 @@ def _state_sources(root, path, record):
                       "lines": [{"n": number, "text": line}], "ref": ref, "href": _source_link(record, number, ref)}
 
 
-def source_fragment(root, path, record, number, *, linked=True, visible=None):
+def source_fragment(root, path, record, number, *, linked=True, visible=None, cited_ref=None):
     """Build a citation from a single file revision, including its nearby lines."""
     first = record["body_start"]
     lines = record["body"].splitlines()
     index = number - first
     if not 0 <= index < len(lines):
         raise storage.ConflictError("Строка источника изменилась. Повторите вопрос.")
-    if visible is None and record["type"] == "project":
+    if visible is None and record["type"] in ("project", "project_history"):
         visible = dict(visible_body_lines(record))
     if visible is not None and number not in visible:
         raise storage.ConflictError("Строка источника изменилась. Повторите вопрос.")
     context = range(max(0, index - 2), min(len(lines), index + 3))
     source = {"path": path.relative_to(root).as_posix(), "start": number, "end": number,
-              "lines": [{"n": first + i, "text": lines[i]} for i in context
+              "lines": [{"n": first + i, "text": visible[first+i] if isinstance(visible, dict) else lines[i]} for i in context
                         if visible is None or first + i in visible]}
+    cited_text = archive_reader.original_citation(record, number, cited_ref)
+    if cited_text is not None:
+        next(row for row in source["lines"] if row["n"] == number)["text"] = cited_text
     if linked:
-        ref = _line_ref(lines[index])
-        source.update(ref=ref, href=_source_link(record, number, ref))
+        ref = cited_ref if cited_text is not None else _line_ref(lines[index])
+        plan = archive_reader.latest_plan(record) if record["type"] == "project" else None
+        source.update(ref=ref, href=_source_link(record, number, ref, plan))
+        if record["type"] == "project_history":
+            source["id"] = record["id"]
+        if plan:
+            source["archivePlan"] = plan
         if "evidence" in record:
             evidence = record["evidence"]
             source["evidence"] = evidence
@@ -90,7 +100,7 @@ class WorkspaceQuery:
         for record_id, label in names.items():
             path, record = scoped[record_id]
             updates = project_updates.read_record_updates(self.root, path, record, limit=limit,
-                                                          start=period[0], end=period[1])
+                                                          start=period[0], end=period[1], include_archived="event" in fields)
             warnings = updates.get("warnings", [])
             if warnings:
                 gaps.append(f"«{label}» — часть журнала требует сверки. " + " ".join(warnings))
@@ -120,7 +130,11 @@ class WorkspaceQuery:
             source = entry.get("source")
             if source is None:
                 number, end = entry["line"], entry.get("end", entry["line"])
-                source = source_fragment(self.root, path, record, number, visible=range(number, end + 1))
+                origin_path, origin_record = path, record
+                if "archiveId" in entry:
+                    origin_record = archive_reader.read_path(self.root, entry["path"], owner=(path, record))
+                    origin_path = self.root / entry["path"]
+                source = source_fragment(self.root, origin_path, origin_record, number, visible=range(number, end + 1))
                 source["end"] = end
                 if entry.get("sources"):
                     source["origin"] = next((s for s in entry["sources"] if s["available"]), entry["sources"][0])
@@ -136,6 +150,9 @@ class WorkspaceQuery:
         query = data.get("query")
         if not isinstance(query, str) or not query.strip() or len(query) > 1000:
             raise ValueError("Введите вопрос длиной от 1 до 1000 символов.")
+        history = data.get("history", False)
+        if type(history) is not bool:
+            raise ValueError("Укажите логическое значение для history.")
         selected = None
         if "directionIds" in data:
             ids = data["directionIds"]
@@ -153,13 +170,13 @@ class WorkspaceQuery:
         with search_index.optional(self.root, allow_sync=scope is None and self.include_people) as db:
             if db is not None:
                 try:
-                    return self._scoped_answer(query, scope, selected, db, limit)
+                    return self._scoped_answer(query, scope, selected, db, limit, history)
                 except sqlite3.DatabaseError:
                     # A damaged postings table can still have a readable catalogue.
                     pass
-        return self._scoped_answer(query, scope, selected, None, limit)
+        return self._scoped_answer(query, scope, selected, None, limit, history)
 
-    def _scoped_answer(self, query, scope, selected, db, limit):
+    def _scoped_answer(self, query, scope, selected, db, limit, history):
         records = (search_index.records(self.root, db, scope=scope) if db is not None
                    else storage.iter_records(self.root, direction_ids=scope))
         scoped = {}
@@ -173,13 +190,27 @@ class WorkspaceQuery:
                 scoped[record["id"]] = path, record
         if selected and not selected <= directions:
             raise ValueError("Выбранное направление не входит в доступную область поиска.")
-        return self._answer(query, scoped, scope, db, limit)
+        if history and (self.root / "Archive/ProjectHistory").is_dir():
+            if db is not None:
+                archives = search_index.archive_records(self.root, db, scope)
+            else:
+                projects = [(path, r) for path, r in scoped.values() if r["type"] == "project"]
+                archives = (entry for path, project in projects for entry in archive_reader.parts(self.root, path, project))
+            for path, record in archives:
+                if record["project_id"] in scoped:
+                    if record["id"] in scoped:
+                        raise ValueError(f"Один ID найден в нескольких карточках: {record['id']}")
+                    scoped[record["id"]] = path, record
+        return self._answer(query, scoped, scope, db, limit, history)
 
-    def _answer(self, query, scoped, scope, db, limit):
+    def _answer(self, query, scoped, scope, db, limit, history):
         def load(identifier, *, raw=False):
             path, record = scoped[identifier]
             if "body" not in record or (raw and "raw" not in record):
-                current = storage.read_record(storage._inside(self.root, path.relative_to(self.root)), include_raw=raw)
+                if record["type"] == "project_history":
+                    current = archive_reader.read_path(self.root, path)
+                else:
+                    current = storage.read_record(storage._inside(self.root, path.relative_to(self.root)), include_raw=raw)
                 if current["revision"] != record["revision"]:
                     raise storage.ConflictError("Карточка изменилась во время ответа. Повторите вопрос.")
                 scoped[identifier] = path, current
@@ -187,15 +218,15 @@ class WorkspaceQuery:
             return record
 
         projects = [r for _, r in scoped.values() if r["type"] == "project"]
-        split = questions.split_update_question(query, projects)
+        split = questions.split_update_question(query, projects) if not history else None
         if split:
-            results = [self._answer(part, scoped.copy(), scope, db, limit) for part in split]
+            results = [self._answer(part, scoped.copy(), scope, db, limit, history) for part in split]
             total = sum(result.get("total", len(result["items"])) for result in results)
             items = [item for result in results for item in result["items"]][:limit]
             return {"items": items, "total": total, "truncated": total > len(items),
                     "message": " ".join(r["message"] for r in results if r["message"])}
 
-        field_request = questions.project_field_request(query, projects)
+        field_request = questions.project_field_request(query, projects) if not history else None
         if field_request is not None:
             targets, message = field_request
             items, gaps = [], []
@@ -212,11 +243,13 @@ class WorkspaceQuery:
                     "message": " ".join(filter(None, [message, *gaps]))}
 
         update_request = questions.project_update_request(query, projects)
-        if update_request:
+        if update_request and (not history or "event" in update_request[0]):
+            if history:
+                update_request = (["event"], *update_request[1:])
             for identifier in update_request[1]:
                 load(identifier)
             return self._project_updates(update_request, scoped, limit or 5, allow_state=not questions.asks_for_brief(query))
-        if self.include_people:
+        if self.include_people and not history:
             from .people import People
             facts = search_index.shared_facts(db, scope) if db is not None else People(self.root).shared_facts(direction_ids=scope)
             for fact in facts:
@@ -227,7 +260,7 @@ class WorkspaceQuery:
         def candidates(mentions, details, decisions):
             lines = None
             if db is not None and not mentions and details:
-                lines = search_index.matching_lines(db, details, scope)
+                lines = search_index.matching_lines(db, details, scope, history=history)
             for identifier, (_, record) in scoped.items():
                 if mentions and identifier not in mentions:
                     continue
@@ -237,11 +270,16 @@ class WorkspaceQuery:
                     # A recorded decision can inherit its meaning from a section heading.
                     # Other unnamed subjects are scored solely from matching source lines.
                     if not decisions:
-                        yield {**record, "candidate_lines": lines[identifier]}
+                        yield {**record, "candidate_lines": lines[identifier], "history_only": history}
                         continue
-                yield load(identifier)
+                current = load(identifier)
+                yield {**current, "candidate_lines": visible_body_lines(current, history=history), "history_only": history}
 
-        matches, missing = questions.passages(query, [r for _, r in scoped.values()], candidates_for=candidates)
+        matches, missing = questions.passages(query, [r for _, r in scoped.values()], candidates_for=candidates,
+                                              history=history)
+        if history:
+            # A project and its quarterly parts share the same name in a question.
+            missing = [label for label in missing if label not in matches.values()]
         items = []
         for (record_id, number), label in islice(matches.items(), limit):
             record = load(record_id)
@@ -251,8 +289,9 @@ class WorkspaceQuery:
                 field, source = next((k, s) for k, s in _state_sources(self.root, path, current) if s["start"] == number)
                 answer = current[field]
             else:
-                source = source_fragment(self.root, path, record, number)
-                answer = record["body"].splitlines()[number - record["body_start"]]
+                visible = dict(visible_body_lines(record, history=history))
+                source = source_fragment(self.root, path, record, number, visible=visible)
+                answer = visible[number]
             items.append({"id": record_id, "title": record["title"], "label": label,
                           "supported": True, "answer": answer, "source": source})
         message = ""
@@ -267,8 +306,10 @@ class WorkspaceQuery:
 
     def open_citation(self, data):
         record_id, number, ref = data.get("id"), data.get("line"), data.get("ref")
+        plan = data.get("archivePlan")
         if (not isinstance(record_id, str) or not record_id or type(number) is not int or number < 1
-                or not isinstance(ref, str) or not re.fullmatch("[0-9a-f]{64}", ref)):
+                or not isinstance(ref, str) or not re.fullmatch("[0-9a-f]{64}", ref)
+                or plan is not None and (not isinstance(plan, str) or not re.fullmatch("[0-9a-f]{64}", plan))):
             raise ValueError("Ссылка на строку источника неполна.")
         if self.include_people and record_id.startswith("person:"):
             from .people import People
@@ -280,18 +321,33 @@ class WorkspaceQuery:
                     source = source_fragment(self.root, self.root / fact["path"], record, fact["cardLine"])
                     return record, source
             raise FileNotFoundError("Подтверждённый общий факт не найден.")
-        path = storage.find_record(self.root, record_id)
-        record = storage.read_record(path, include_raw=True)
-        if record["id"] != record_id or not self.allows(record):
+        if archive_reader.is_archive_id(record_id):
+            record = archive_reader.by_id(self.root, record_id)
+            path = self.root / record["path"]
+            allowed = self.direction_ids is None or record["direction"] in self.direction_ids
+        else:
+            path = storage.find_record(self.root, record_id)
+            record = storage.read_record(path, include_raw=True)
+            allowed = self.allows(record)
+        if record["id"] != record_id or not allowed:
             raise ValueError("Запись находится за пределами выбранной области поиска.")
         for _, source in _state_sources(self.root, path, record):
             if source["ref"] == ref:
                 return record, source
         available = dict(visible_body_lines(record))
-        if number not in available or _line_ref(available[number]) != ref:
-            # A file rename retains its ID. Inside a file, only follow identical, unique text.
-            matches = [n for n, line in available.items() if _line_ref(line) == ref]
-            if len(matches) != 1:
+        lines = record["body"].splitlines()
+        def matches(n):
+            return _line_ref(lines[n - record["body_start"]]) == ref
+        prior_rotation = record["type"] == "project" and archive_reader.latest_plan(record) != plan
+        original = archive_reader.original_citation(record, number, ref)
+        if prior_rotation or number not in available or (original is None and not matches(number)):
+            candidates = [n for n in available if matches(n)]
+            if prior_rotation:
+                path, record, number = archive_reader.citation_line(self.root, path, record, number, ref, candidates, plan)
+                if record["type"] == "project_history":
+                    available = archive_reader.visible_lines(record)
+            elif len(candidates) == 1:
+                number = candidates[0]
+            else:
                 raise storage.ConflictError("Строка источника изменилась. Задайте вопрос ещё раз.")
-            number = matches[0]
-        return record, source_fragment(self.root, path, record, number, visible=available)
+        return record, source_fragment(self.root, path, record, number, visible=available, cited_ref=ref)

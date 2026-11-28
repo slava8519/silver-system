@@ -23,7 +23,9 @@ export function cardLinks(ui, root) {
     if (ui.embedded && window.parent !== window) a.addEventListener("click", async event => {
       event.preventDefault();
       try {
-        const ref = source ? await ui.api("citation", {id: source.id, line: source.line, ref: source.ref}) : {path, start: line};
+        const ref = source ? await ui.api("citation", {
+          id: source.id, line: source.line, ref: source.ref, ...(source.archivePlan && {archivePlan:source.archivePlan})
+        }) : {path, start: line};
         openObsidianSource(ref.path, ref.start, subpath);
       } catch (error) { a.after(ui.notice(error.message)); }
     });

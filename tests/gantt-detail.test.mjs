@@ -153,13 +153,15 @@ test("native Markdown evidence still opens its verified line in Obsidian and its
   globalThis.window = {parent:{postMessage:(message, origin) => messages.push({message, origin})}};
   globalThis.location = new URL("http://127.0.0.1:8766/");
   try {
-    const panel = evidence({...ui, embedded:true, api:async (action,args) => {
-      assert.equal(action,"citation");
-      assert.deepEqual(args,{id:source.id, line:source.line, ref:source.ref});
-      return {path:source.path, start:11};
-    }}, root,source);
-    await [...panel.all()].find(n => n.tag === "a").click({preventDefault() {}});
-    assert.deepEqual(messages,[{origin:"app://obsidian.md", message:{type:"second-brain-open-source",path:source.path,line:11}}]);
+    for (const scope of [{}, {archivePlan:"ab".repeat(32)}]) {
+      const panel = evidence({...ui, embedded:true, api:async (action,args) => {
+        assert.equal(action,"citation");
+        assert.deepEqual(args,{id:source.id, line:source.line, ref:source.ref, ...scope});
+        return {path:source.path, start:11};
+      }}, root,{...source,...scope});
+      await [...panel.all()].find(n => n.tag === "a").click({preventDefault() {}});
+      assert.deepEqual(messages.pop(),{origin:"app://obsidian.md", message:{type:"second-brain-open-source",path:source.path,line:11}});
+    }
     const a = [...evidence(ui,root,source).all()].find(n => n.tag === "a");
     assert.equal(a.href,location.origin + source.href);
     assert.equal(a.target,"_blank");

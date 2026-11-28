@@ -10,23 +10,25 @@ import unicodedata
 from contextlib import ExitStack, closing, contextmanager
 from itertools import chain
 from pathlib import Path
+from urllib.parse import unquote
 
 from . import storage
 from .people import People, _parse_facts
 
 
-_VERSION = 6
+_VERSION = 8
 _NON_ASCII_BREAK = re.compile(r"[^\w\s\x00-\x7f](?=[^\W_])")
 _SCHEMA = """
 CREATE TABLE metadata(signature TEXT NOT NULL);
 CREATE TABLE documents(
     key INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE, stamp TEXT NOT NULL,
     id TEXT, type TEXT, title TEXT, aliases TEXT, alias_terms TEXT, direction TEXT,
-    revision TEXT, brief_names TEXT);
+    revision TEXT, brief_names TEXT, project_id TEXT, archive_signature TEXT);
 CREATE INDEX documents_id ON documents(id);
 CREATE TABLE lines(
     key INTEGER PRIMARY KEY, document INTEGER NOT NULL, line INTEGER NOT NULL, text TEXT NOT NULL,
-    terms_suffix TEXT NOT NULL, brief INTEGER NOT NULL, fact_id TEXT, kind TEXT, direction TEXT);
+    terms_suffix TEXT NOT NULL, brief INTEGER NOT NULL, fact_id TEXT, kind TEXT, direction TEXT,
+    history INTEGER NOT NULL);
 CREATE INDEX lines_document ON lines(document);
 CREATE INDEX lines_unicode ON lines(key) WHERE kind='unicode-break';
 CREATE VIEW fragment_terms AS
@@ -46,12 +48,24 @@ def _stamp(path):
 def _manifest(root):
     digest = hashlib.sha256()
     files = {}
-    for path in chain(storage.iter_markdown_paths(root), People(root).paths()):
+    for path in chain(storage.iter_markdown_paths(root), People(root).paths(), _archive_paths(root)):
         relative = path.relative_to(root).as_posix()
         stamp = _stamp(path)
         files[relative] = stamp
         digest.update(os.fsencode(relative) + b"\0" + stamp.encode() + b"\0")
     return files, digest.hexdigest()
+
+
+def _archive_paths(root):
+    from . import archive_reader
+    directory = storage._inside(root, archive_reader.BASE)
+    if directory.is_dir():
+        for owner in sorted(directory.iterdir()):
+            if owner.name.startswith(".") or owner.is_symlink() or not owner.is_dir():
+                continue
+            for path in sorted(owner.iterdir()):
+                if archive_reader.archive_path(path.relative_to(root)) and not path.is_symlink() and path.is_file():
+                    yield path
 
 
 def _database(root):
@@ -83,11 +97,17 @@ def _lines(path, record):
     if record["type"] == "person":
         for fact in _parse_facts(record).values():
             if fact["visibility"] == "shared":
-                yield (fact["cardLine"], fact["text"], "", False, fact["id"], fact["kind"], fact["direction"])
+                yield (fact["cardLine"], fact["text"], "", False, fact["id"], fact["kind"], fact["direction"], False)
         return
     projected, hidden = projection(record) if record["type"] == "project" else ([], set())
     fields = {entry["line"]: entry for entry in projected}
-    for number, line in _source_lines(path, record, hidden):
+    if record["type"] == "project":
+        raw = record["raw"].splitlines()
+        for key in storage.PROJECT_EVIDENCE_FIELDS:
+            if record.get(key):
+                number = record["field_lines"][key]
+                yield number, raw[number-1], "", False, None, "field", None, False
+    for number, line, history in _source_lines(path, record, hidden):
         entry = fields.get(number)
         brief = bool(entry and entry["field"] == "brief")
         suffix = ""
@@ -104,17 +124,34 @@ def _lines(path, record):
             # keeps inside a token, e.g. casefolded capital İ. Verify these rare
             # lines in ask even when FTS reports no hit. Lexical ranking stays intact.
             kind = "unicode-break"
-        yield number, line, suffix, brief, None, kind, None
+        yield number, line, suffix, brief, None, kind, None, history
 
 
-def _index_file(db, root, relative, stamp):
+def _index_file(db, root, relative, stamp, archive_owners):
     from .search import _normalize, word_stems
     path = storage._inside(root, relative)
-    if Path(relative).parts[0] == "People":
+    if Path(relative).parts[:2] == ("Archive", "ProjectHistory"):
+        from .archive_reader import read_path
+        project_id = unquote(path.parent.name)
+        if project_id not in archive_owners:
+            parents = list(db.execute("SELECT path FROM documents WHERE type='project' AND id=?", (project_id,)))
+            if len(parents) > 1:
+                raise ValueError("Один ID архива относится к нескольким проектам.")
+            owner = None
+            if parents:
+                owner_path = storage._inside(root, parents[0]["path"])
+                owner = (owner_path, storage.read_record(owner_path))
+            archive_owners[project_id] = owner
+        owner = archive_owners[project_id]
+        try:
+            record = read_path(root, path, owner=owner) if owner is not None else None
+        except FileNotFoundError:
+            record = None  # A staged or unreferenced part is outside search.
+    elif Path(relative).parts[0] == "People":
         record = next((r for _, _, r in People(root)._cards((path,))), None)
     else:
         try:
-            record = storage.read_record(path)
+            record = storage.read_record(path, include_raw=True)
         except storage.UnmanagedMarkdown:
             record = None
     row = db.execute("INSERT INTO documents(path,stamp) VALUES (?,?)", (relative, stamp))
@@ -122,12 +159,18 @@ def _index_file(db, root, relative, stamp):
         key = row.lastrowid
         aliases = record["aliases"]
         names = "\x1f" + "\x1f".join(" ".join(word_stems(n)) for n in [record["title"], *aliases]) + "\x1f"
+        archive_signature = None
+        if record["type"] == "project":
+            from .archive_reader import pointers
+            manifest = {name: marker["sha256"] for name, marker in pointers(record).items()}
+            archive_signature = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
         db.execute("""UPDATE documents SET id=?,type=?,title=?,aliases=?,alias_terms=?,direction=?,
-                      revision=?,brief_names=? WHERE key=?""",
+                      revision=?,brief_names=?,project_id=?,archive_signature=? WHERE key=?""",
                    (record["id"], record["type"], record["title"], json.dumps(aliases, ensure_ascii=False),
-                    _normalize(" ".join(aliases)), record.get("direction"), record["revision"], names, key))
-        db.executemany("""INSERT INTO lines(document,line,text,terms_suffix,brief,fact_id,kind,direction)
-                          VALUES (?,?,?,?,?,?,?,?)""", ((key, *line) for line in _lines(path, record)))
+                    _normalize(" ".join(aliases)), record.get("direction"), record["revision"], names,
+                    record.get("project_id"), archive_signature, key))
+        db.executemany("""INSERT INTO lines(document,line,text,terms_suffix,brief,fact_id,kind,direction,history)
+                          VALUES (?,?,?,?,?,?,?,?,?)""", ((key, *line) for line in _lines(path, record)))
         db.execute("""INSERT INTO fragments(rowid,title_terms,alias_terms,body_terms)
                       SELECT rowid,title_terms,alias_terms,body_terms FROM fragment_terms
                       WHERE rowid IN (SELECT key FROM lines WHERE document=?)""", (key,))
@@ -135,23 +178,40 @@ def _index_file(db, root, relative, stamp):
         raise storage.ConflictError("Карточка изменилась во время индексирования. Повторите запрос.")
 
 
-def _sync(db, root, files, signature):
+def _update_documents(db, root, files, previous, changed):
     # Delete using the original indexed terms before replacing the source rows.
-    previous = {row["path"]: row for row in db.execute("SELECT key,path,stamp,type FROM documents")}
-    removed_person_facts = False
-    for relative, row in previous.items():
-        key, stamp = row["key"], row["stamp"]
-        if files.get(relative) == stamp:
-            continue
-        removed_person_facts |= row["type"] == "person"
+    for relative in changed & previous.keys():
+        key = previous[relative]["key"]
         db.execute("""INSERT INTO fragments(fragments,rowid,title_terms,alias_terms,body_terms)
                       SELECT 'delete',rowid,title_terms,alias_terms,body_terms FROM fragment_terms
                       WHERE rowid IN (SELECT key FROM lines WHERE document=?)""", (key,))
         db.execute("DELETE FROM lines WHERE document=?", (key,))
         db.execute("DELETE FROM documents WHERE key=?", (key,))
+    archive_owners = {}
     for relative, stamp in files.items():
-        if relative not in previous or previous[relative]["stamp"] != stamp:
-            _index_file(db, root, relative, stamp)
+        if relative in changed:
+            _index_file(db, root, relative, stamp, archive_owners)
+
+
+def _owner_states(db):
+    return {row[0]: tuple(row[1:]) for row in db.execute(
+        "SELECT id,path,title,aliases,direction,archive_signature FROM documents WHERE type='project' ORDER BY path")}
+
+
+def _sync(db, root, files, signature):
+    previous = {row["path"]: row for row in db.execute("SELECT key,path,stamp,type FROM documents")}
+    names = files.keys() | previous.keys()
+    changed = {name for name in names if name not in previous or files.get(name) != previous[name]["stamp"]}
+    archives = {name for name in names if name.startswith("Archive/ProjectHistory/")}
+    removed_person_facts = any(previous[name]["type"] == "person" for name in changed & previous.keys())
+    owners_before = _owner_states(db) if archives else {}
+    _update_documents(db, root, files, previous, changed - archives)
+    if archives:
+        # Routine edits of a project's active journal leave its cold parts indexed.
+        owners_after = _owner_states(db)
+        affected = {p for p in owners_before.keys() | owners_after.keys() if owners_before.get(p) != owners_after.get(p)}
+        changed_archives = {name for name in archives if name in changed or unquote(Path(name).parent.name) in affected}
+        _update_documents(db, root, files, previous, changed_archives)
     if db.execute("""SELECT 1 FROM documents WHERE type='person' GROUP BY id HAVING count(*)>1""").fetchone():
         raise ValueError("Один ID человека найден в нескольких карточках.")
     if removed_person_facts:
@@ -289,7 +349,17 @@ def shared_facts(db, scope):
         yield {**row, "aliases": json.loads(row["aliases"])}
 
 
-def matching_lines(db, terms, scope):
+def archive_records(root, db, scope):
+    permitted = _scope_filter(db, scope, "direction")
+    for row in db.execute(f"""SELECT path,id,type,title,aliases,direction,revision,project_id FROM documents
+                              WHERE type='project_history' AND {permitted} ORDER BY path"""):
+        record = dict(row)
+        path = storage._inside(root, record.pop("path"))
+        record["aliases"] = json.loads(record["aliases"])
+        yield path, record
+
+
+def matching_lines(db, terms, scope, *, history=False):
     # _related permits a stem to be a prefix in either direction from four letters.
     # Shorter prefixes deliberately overselect. Markdown scoring verifies all evidence.
     prefixes = sorted({t[:4] for t in terms if t.isascii() or all('а' <= c <= 'я' for c in t)})
@@ -303,7 +373,7 @@ def matching_lines(db, terms, scope):
             UNION SELECT key FROM lines WHERE kind='unicode-break')
             SELECT d.id,l.line,l.text FROM candidates c JOIN lines l ON l.key=c.key
             JOIN documents d ON d.key=l.document
-            WHERE d.type IN ('project','note') AND l.kind IS NOT 'title' AND {permitted}
-            ORDER BY d.key,l.line""", (expr,)):
+            WHERE d.type IN ('project','note','project_history') AND l.kind IS NOT 'title' AND l.kind IS NOT 'field'
+            AND l.history=? AND {permitted} ORDER BY d.key,l.line""", (expr, history)):
         matched.setdefault(row["id"], []).append((row["line"], row["text"]))
     return matched

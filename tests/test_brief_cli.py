@@ -91,8 +91,8 @@ class BriefCommandTests(unittest.TestCase):
         self.assertFalse(rest["truncated"])
         folders = first["items"] + rest["items"]
         self.assertEqual(folders, full["folders"])
-        self.assertIn({"path": "Projects", "count": 1}, folders)
-        self.assertIn({"path": "Specimens", "count": 0}, folders)
+        self.assertIn({"path": "Projects", "count": 1, "files": 1}, folders)
+        self.assertIn({"path": "Specimens", "count": 0, "files": 0}, folders)
         self.assertNotIn("Авторский проект", json.dumps(folders, ensure_ascii=False))
         self.call("overview", "--folders", "--offset", "-1", ok=False)
 

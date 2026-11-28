@@ -3,7 +3,7 @@
 from pathlib import PurePosixPath
 import re
 
-from . import query, storage
+from . import archive_reader, query, storage
 from .inbox import Inbox
 
 
@@ -48,6 +48,8 @@ def _source_shape(relative, allow_originals):
     if not isinstance(relative, str) or not relative or "\\" in relative or any(ord(c) < 32 for c in relative):
         raise ValueError("Укажите путь к заметке или проекту внутри хранилища.")
     path = PurePosixPath(relative)
+    if archive_reader.archive_path(relative) and relative == path.as_posix():
+        return path
     if allow_originals and is_original_path(relative):
         return path
     if (path.as_posix() != relative or len(path.parts) < 2 or path.parts[0] not in ("Notes", "Projects")
@@ -90,19 +92,28 @@ def verify_source_line(root, item, *, records=None, allow_originals=False):
     if records is not None and path in records:
         record = records[path]
     else:
-        record = storage.read_record(path, include_raw=True)
+        record = (archive_reader.read_path(root, relative) if archive_reader.archive_path(relative)
+                  else storage.read_record(path, include_raw=True))
         if records is not None:
             records[path] = record
-    if record["type"] not in ("note", "project"):
+    if record["type"] not in ("note", "project", "project_history"):
         raise ValueError("Укажите строку заметки или проекта.")
-    if number < record["body_start"]:
+    if (record["type"] == "project" and number >= record["body_start"] and item.get("id") == record["id"]
+            and item.get("ref") and archive_reader.latest_plan(record) != item.get("archivePlan")):
+        record, fragment = query.WorkspaceQuery(root, include_people=False).open_citation(item)
+        number = fragment["start"]
+        item = {**item, "path": fragment["path"], "line": number, "id": record["id"]}
+    elif number < record["body_start"]:
         fragment = next((s for _, s in query._state_sources(root, path, record) if s["start"] == number), None)
         if not fragment:
             raise ValueError("В шапке проекта доступны статус, срок, следующий шаг и владелец.")
     else:
-        fragment = query.source_fragment(root, path, record, number)
+        fragment = query.source_fragment(root, path, record, number, cited_ref=item.get("ref"))
     line_text = next(row["text"] for row in fragment["lines"] if row["n"] == number)
-    return _verified(item, record["id"], fragment["ref"], line_text)
+    source, line_text = _verified(item, record["id"], fragment["ref"], line_text)
+    if fragment.get("archivePlan"):
+        source["archivePlan"] = fragment["archivePlan"]
+    return source, line_text
 
 
 def _verified(item, identifier, fingerprint, line_text):
@@ -165,7 +176,7 @@ def resolve_source(root, reference, *, records=None, allow_originals=False):
     ref = linked_source(reference, allow_originals=allow_originals)
     try:
         source, _ = verify_source_line(root, ref, records=records, allow_originals=allow_originals)
-        return {**source, "href": ref["href"]}
+        return linked_source(source, allow_originals=allow_originals)
     except (OSError, ValueError):
         if is_original_path(ref["path"]):
             # An immutable original has no replacement card or moved passage.
@@ -174,5 +185,9 @@ def resolve_source(root, reference, *, records=None, allow_originals=False):
         line = next(v["text"] for v in fragment["lines"] if v["n"] == fragment["start"])
         if ref["quote"] not in line:
             raise storage.ConflictError("Цитата в исходной записи изменилась.")
-        return {**ref, "path": fragment["path"], "id": record["id"], "line": fragment["start"],
-                "href": fragment["href"]}
+        resolved = {**ref, "path": fragment["path"], "id": record["id"], "line": fragment["start"],
+                    "href": fragment["href"]}
+        resolved.pop("archivePlan", None)
+        if fragment.get("archivePlan"):
+            resolved["archivePlan"] = fragment["archivePlan"]
+        return resolved

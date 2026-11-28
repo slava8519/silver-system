@@ -1,6 +1,6 @@
 """HTTP adapters for the same sourced OKR operations used by brain-plan."""
 
-from . import brief, query, storage
+from . import archive_reader, brief, query, storage
 from .okr import KeyResults
 
 
@@ -33,6 +33,7 @@ def source_page(root, action, data):
     record = storage.read_record(path, include_raw=True)
     if record["type"] not in ("project", "note"):
         raise ValueError("Выберите заметку или проект с подтверждением.")
+    plan = archive_reader.latest_plan(record) if record["type"] == "project" else None
     def candidates():
         for _, fragment in query._state_sources(root, path, record):
             yield fragment["start"], fragment["lines"][0]["text"], fragment["ref"]
@@ -44,7 +45,10 @@ def source_page(root, action, data):
             pos = content.casefold().find(match)
             if content and pos >= 0 and not content.startswith("<!--"):
                 start = max(0, pos - 100) if len(content) > 600 else 0
-                yield {"line": number, "quote": content[start:start + 600], "ref": ref}
+                excerpt = {"line": number, "quote": content[start:start + 600], "ref": ref}
+                if plan and number >= record["body_start"]:
+                    excerpt["archivePlan"] = plan
+                yield excerpt
     return brief.page(excerpts(), limit, offset)
 
 

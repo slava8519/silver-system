@@ -45,7 +45,7 @@ class TeamDecisionTests(unittest.TestCase):
             self.assertEqual([p["name"] for p in new["members"]], ["Ева Ланская"])
             overview = Workspace(root).overview()
             self.assertEqual(overview["peopleCount"], 3)
-            self.assertIn({"path": "People/Groups", "count": 3}, overview["folders"])
+            self.assertIn({"path": "People/Groups", "count": 3, "files": 3}, overview["folders"])
 
     def test_existing_vault_has_no_implicit_owner_or_team(self):
         with tempfile.TemporaryDirectory() as temporary:

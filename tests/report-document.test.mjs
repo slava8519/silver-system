@@ -87,6 +87,7 @@ test("card reader formats a note and opens headings, named wiki links and origin
     "[Сверка](<../../Notes/Сверка дат.md#Итоги>) [в начало](#Окна%20проверки) [[Проверка]]", "",
     "| Окно | В работе |", "| --- | --- |", "| [[Projects/План\\|Май]] | `A|B` |", "",
     "- [x] Собрано", "- [ ] <img src=x onerror=alert(1)>", "",
+    "[Квартал](../../Archive/ProjectHistory/kit/2026-Q2-" + digest + ".md#Май)", "",
     "[Источник, строка 17](../../Sources/Originals/" + digest + ".txt) [сайт](https://example.org/)", "",
     "~~~", "[[Совпадение|не ссылка]]", "~~~", "<!-- внутренний маркер -->",
     "[плохая ссылка](javascript:alert(1)) [наружу](../../../file.md) [[.hidden/Secret|скрытая]]",
@@ -109,6 +110,8 @@ test("card reader formats a note and opens headings, named wiki links and origin
   assert.equal(route("Сверка").get("path"), "Notes/Сверка дат.md");
   assert.equal(route("Проверка").get("short"), "1");
   assert.equal(route("Май").get("path"), "Projects/План.md");
+  assert.equal(route("Квартал").get("path"), "Archive/ProjectHistory/kit/2026-Q2-" + digest + ".md");
+  assert.equal(route("Квартал").get("section"), "Май");
   assert.match(byName.get("в начало").href, /^#record\/kit\?/);
   assert.equal(byName.get("Оригинал · строка 17").href, "/original/" + digest + "?start=17");
   assert.equal(byName.get("сайт").rel, "noopener noreferrer");

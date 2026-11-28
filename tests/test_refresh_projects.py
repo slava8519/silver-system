@@ -2,7 +2,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from second_brain import project_updates, storage
+from second_brain import history_archive, project_updates, storage
 from second_brain.batch import Batch
 from second_brain.refresh_projects import refresh_projects
 
@@ -22,6 +22,18 @@ class RefreshProjectsTests(unittest.TestCase):
     def run_refresh(self):
         with storage._write_lock(self.root):
             return refresh_projects(self.root)
+
+    def test_a_fresh_decision_after_rotation_cites_the_current_project(self):
+        decision = "Решили печатать карты на матовой бумаге."
+        key, path = self.card("Тираж", f"## История статусов\n### 2024-01-10 — образцы\n{decision}\n\n"
+                                       f"## Сегодня\n{decision}\n")
+        options = dict(as_of="2026-11-28", min_kept=0)
+        plan = history_archive.rotate(self.root, key, **options)
+        history_archive.rotate(self.root, key, apply=plan["revision"], **options)
+        self.assertEqual(self.run_refresh()["eventsAdded"], 1)
+        event = project_updates.read_updates(self.root, key)["events"][0]
+        self.assertEqual(event["sources"][0]["path"], path.relative_to(self.root).as_posix())
+        self.assertEqual(event["sources"][0]["archivePlan"], plan["revision"])
 
     def test_canonical_state_and_project_decisions_are_citable_and_repeatable(self):
         key, path = self.card("Тираж", "Решили печатать карты на матовой бумаге.\n\nУтвердили обложку.\n", status="Готов")

@@ -5,7 +5,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 
-from . import evidence, storage
+from . import archive_reader, evidence, storage
 from .markdown_sections import FENCE, fenced_lines
 from .planning import validate_due
 
@@ -174,13 +174,25 @@ def _current(entries):
     return next(iter(summaries), None)
 
 
-def read_record_updates(root, path, record, limit=5, offset=0, *, start=None, end=None):
+def archived_events(root, path, record):
+    for archived_path, part in archive_reader.parts(root, path, record):
+        relative = archived_path.relative_to(root).as_posix()
+        entries, _ = projection(part)
+        for entry in entries:
+            if entry["field"] == "event":
+                yield {**entry, "path": relative, "archiveId": part["id"]}
+
+
+def read_record_updates(root, path, record, limit=5, offset=0, *, start=None, end=None, include_archived=True):
     if type(limit) is not int or not 1 <= limit <= 20 or type(offset) is not int or offset < 0:
         raise ValueError("Укажите размер страницы от 1 до 20 и неотрицательное смещение.")
     warnings = []
     _, entries, _ = _layout(record, warnings=warnings)
     summary = _current(entries)
     events = [entry for entry, _, _ in entries if entry["field"] == "event" and entry["text"]]
+    archives = [{"path": rel, "quarter": Path(rel).name[:7]} for rel in archive_reader.pointers(record)]
+    if include_archived and archives:
+        events.extend(archived_events(root, path, record))
     if start or end:
         events = [event for event in events if event["date"] and (not start or start <= event["date"])
                   and (not end or event["date"] <= end)]
@@ -197,7 +209,8 @@ def read_record_updates(root, path, record, limit=5, offset=0, *, start=None, en
                 sources.append({**{k: item[k] for k in ("path", "line", "quote")}, "available": False})
         return {**entry, "sources": sources}
 
-    return {"id": record["id"], "path": path.relative_to(root).as_posix(), "revision": record["revision"],
+    return {**({"archives": archives} if archives else {}),
+            "id": record["id"], "path": path.relative_to(root).as_posix(), "revision": record["revision"],
             "brief": resolved(summary) if summary and summary["text"] else None,
             "events": [resolved(e) for e in events[offset:offset+limit]], "total": len(events),
             "offset": offset, "truncated": offset+limit < len(events), **({"warnings": warnings} if warnings else {})}
@@ -212,11 +225,11 @@ def _project(root, identifier):
     return path, before, record, header
 
 
-def read_updates(root, project_id, limit=5, offset=0):
+def read_updates(root, project_id, limit=5, offset=0, *, include_archived=True):
     root = Path(root).resolve()
     with storage._vault_lock(root, write=False):
         path, _, record, _ = _project(root, project_id)
-        return read_record_updates(root, path, record, limit, offset)
+        return read_record_updates(root, path, record, limit, offset, include_archived=include_archived)
 
 
 def _text(value):
@@ -227,11 +240,21 @@ def _text(value):
     return value.strip()
 
 
-def _same(entry, text, actor, date, sources):
+def _same(root, entry, text, actor, date, sources):
     def keys(items):
         return {(s["id"], s["ref"], s["quote"]) for s in items}
-    return (entry["text"] == text and entry["author"] == actor and entry["date"] == date
-            and keys(entry["sources"]) == keys(sources))
+    if (entry["text"], entry["author"], entry["date"]) != (text, actor, date):
+        return False
+    wanted = keys(sources)
+    if keys(entry["sources"]) == wanted:
+        return True
+    # A saved citation acquires the quarter's identity after its line moves to an archive.
+    if not any(archive_reader.archive_path(item["path"]) for item in sources):
+        return False
+    try:
+        return keys(_source(root, item, resolve=True) for item in entry["sources"]) == wanted
+    except (OSError, ValueError):
+        return False
 
 
 def _apply(root, path, record, *, actor, sources, date=None, text=None, summary=None,
@@ -244,14 +267,22 @@ def _apply(root, path, record, *, actor, sources, date=None, text=None, summary=
         evidence.require_event_date(date, sources)
     sections, entries, hidden = _layout(record, strict=True)
     for source in sources:
-        if source["id"] == record["id"] and (source["line"] in hidden or any(
-                row["line"] <= source["line"] <= row["end"] for row, _, _ in entries)):
+        line = source["line"]
+        self_reference = source["id"] == record["id"] and (line in hidden or any(
+            row["line"] <= line <= row["end"] for row, _, _ in entries))
+        if archive_reader.archive_path(source["path"]) and Path(source["path"]).parent.name == archive_reader.owner_folder(record["id"]):
+            part = archive_reader.read_path(root, source["path"], owner=(path, record))
+            self_reference = any(span["section"] == "Последнее" and
+                                 span["archiveStart"] <= line <= span["archiveStart"] + span["end"] - span["start"]
+                                 for span in part["archiveOrigin"]["ranges"])
+        if self_reference:
             raise ValueError("Для проектной записи нужно независимое основание. Сошлитесь на исходное решение или заметку.")
     body = record["body"]
     newline = "\r\n" if "\r\n" in body or (not body and path.read_bytes().startswith(b"---\r\n")) else "\n"
     lines = body.splitlines(keepends=True)
     current = _current(entries)
     events = [entry for entry, _, _ in entries if entry["field"] == "event"]
+    events.extend(archived_events(root, path, record))
     status = "unchanged"
     stamp = datetime.now(timezone.utc).isoformat()
     changes = {}
@@ -269,14 +300,14 @@ def _apply(root, path, record, *, actor, sources, date=None, text=None, summary=
             status = "manual_preserved"
         elif inbox and current and newest and (date or "") < newest:
             status = "older_event"
-        elif not current or not _same(current, summary, actor, date, sources):
+        elif not current or not _same(root, current, summary, actor, date, sources):
             changes["brief"] = summary
             status = "updated"
     if text is not None:
         text = _text(text)
         if "event" in sections and sections["event"] is None:
             raise storage.ConflictError("В проекте несколько разделов «Последнее». Уточните заголовки в Markdown.")
-        if not any(_same(entry, text, actor, date, sources) for entry in events):
+        if not any(_same(root, entry, text, actor, date, sources) for entry in events):
             changes["event"] = text
     if not changes:
         return body, status

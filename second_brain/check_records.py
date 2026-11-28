@@ -4,11 +4,14 @@ from collections import defaultdict
 from io import BytesIO
 import os
 from pathlib import Path
+import posixpath
 import re
+from urllib.parse import unquote, urlsplit
 
-from . import cycles, dependencies, gantt, okr, okr_criteria, okr_links, okr_progress, people
+from . import archive_reader, cycles, dependencies, gantt, okr, okr_criteria, okr_links, okr_progress, people
 from . import plan_tree, planning, project_membership, project_updates, reports, storage, teams
 from .gantt_group_cards import GROUP_FIELDS, GROUP_FOLDER
+from .markdown_sections import fenced_lines
 from .schedule import schedule_history
 
 
@@ -131,7 +134,42 @@ def _header_problem(data):
     return 1, "Проверьте формат полей карточки и кодировку UTF-8."
 
 
-def _body_links(record, path, report):
+_ARCHIVE_LINK = re.compile(
+    r'''(?<!\\)\[(?:\\.|[^\[\]\\])*\]\(\s*(?:<([^>]+)>|([^()\s]+))(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)'''
+    r"|(?<!\\)\[\[([^|#\]]+)(?:#[^|\]]*)?(?:\|[^\]]*)?\]\]")
+_INLINE_CODE = re.compile(r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)")
+
+
+def _archive_references(root, path, data):
+    if b"ProjectHistory/" not in data:
+        return
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    protected, _ = fenced_lines(lines, comments=True)
+    seen = set()
+    for i, line in enumerate(lines):
+        if i in protected or "ProjectHistory/" not in line:
+            continue
+        for match in _ARCHIVE_LINK.finditer(_INLINE_CODE.sub("", line)):
+            wiki = match[3]
+            if wiki:
+                name = wiki.strip().removesuffix(".md") + ".md"
+                base = path.parent.relative_to(root) if name.startswith(("./", "../")) else Path()
+            else:
+                try:
+                    url = urlsplit(match[1] or match[2])
+                except ValueError:
+                    continue
+                if url.scheme or url.netloc or url.path.startswith("/"):
+                    continue
+                name = unquote(url.path)
+                base = path.parent.relative_to(root)
+            target = posixpath.normpath((base / name).as_posix())
+            if archive_reader.archive_path(target) and target not in seen:
+                seen.add(target)
+                yield path, i + 1, target
+
+
+def _body_links(record, path, report, declared_archives):
     """Yield (stable ID, expected kind, one-based source line)."""
     kind, base = record["type"], record["body_start"]
     lines = record["body"].splitlines()
@@ -177,6 +215,13 @@ def _body_links(record, path, report):
             yield identifier, "person", base + index
     elif kind == "project":
         project_updates._layout(record, strict=True)
+        for relative in archive_reader.pointers(record):
+            declared_archives.add(relative)
+            try:
+                archived = archive_reader.read_path(report.root, relative, owner=(path, record))
+                project_updates._layout(archived, strict=True)
+            except (ValueError, OSError) as error:
+                report.add("project.archive", path, 0, f"Не удалось проверить архив {relative}: {error}")
         start, due = (storage._iso_date(record.get(k)) for k in ("project_start", "due"))
         if start and due and start > due:
             report.add("record.date", path, record["field_lines"]["due"], "Согласованный срок раньше начала проекта.")
@@ -219,6 +264,8 @@ def check_records(root, report):
     links = []
     template_versions = {}
     issue_templates = []
+    archive_links = []
+    declared_archives = set()
     checked = 0
     for path in _paths(root, report):
         try:
@@ -226,6 +273,7 @@ def check_records(root, report):
         except OSError:
             report.unreadable("record.unreadable", path, 1, "Не удалось прочитать файл карточки.")
             continue
+        archive_links.extend(_archive_references(root, path, data))
         try:
             kind = _kind(data)
             if kind is None:
@@ -271,7 +319,7 @@ def check_records(root, report):
                 report.add("record.header", path, record["field_lines"].get(field, 1),
                            f"В карточке цели требуется поле {field}.")
         try:
-            for target, expected, line in _body_links(record, path, report):
+            for target, expected, line in _body_links(record, path, report, declared_archives):
                 links.append((path, line, target, expected))
         except (ValueError, KeyError, TypeError, IndexError, AttributeError, RecursionError) as error:
             # The parser can embed private text in its error; publish only a known coordinate.
@@ -279,6 +327,10 @@ def check_records(root, report):
             line = int(coordinate[1]) if coordinate else min(record["body_start"], len(data.splitlines()))
             report.add("record.structure", path, line, "Проверьте служебные разделы и разметку в теле карточки.")
     _owner(root, report, links)
+    for path, line, target in archive_links:
+        if target not in declared_archives:
+            report.add("project.archive", path, line,
+                       f"В карточке проекта отсутствует служебная ссылка на квартальный архив {target}.")
     for path, line, template, expected_revision in issue_templates:
         revision = template_versions.get(template)
         if revision is None:

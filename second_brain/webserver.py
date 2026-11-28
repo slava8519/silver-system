@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import mimetypes
 from pathlib import Path
+import socket
 import sqlite3
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
@@ -19,6 +20,12 @@ from .routing import Routing
 from .search import visible_body_lines
 
 WEB = Path(__file__).resolve().parent / "web"
+
+
+class VaultHTTPServer(ThreadingHTTPServer):
+    # Older Python versions queue only five connections; parallel module imports
+    # can then lose a socket before the browser finishes loading the workspace.
+    request_queue_size = socket.SOMAXCONN
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -120,6 +127,13 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(content)
             if not isinstance(data, dict):
                 raise ValueError("Ожидался объект JSON.")
+            if self.mode == "work" and path == "/api/project-history/archive":
+                from .history_archive import rotate
+                if (not {"id", "revision"} <= data.keys() or data.keys() - {"id", "revision", "asOf"}
+                        or not isinstance(data["revision"], str) or not data["revision"]):
+                    raise ValueError("Для архивации подтвердите предпросмотр этого проекта.")
+                self._send(200, rotate(self.server.vault.root, data["id"], as_of=data.get("asOf"), apply=data["revision"]))
+                return
             if path == "/api/work/stop" and self.server.work_control:
                 proof = data.get("proof")
                 if (set(data) != {"instance", "proof"} or data["instance"] != self.server.work_control
@@ -242,17 +256,23 @@ class Handler(BaseHTTPRequestHandler):
             document = self._source_document("Источник отчёта", report_web.source_html(source), back, "Выпуск отчёта")
             self._send(200, document, "text/html; charset=utf-8")
             return
+        elif self.mode == "work" and path == "/api/project-history/archive":
+            from .history_archive import rotate
+            self._send(200, rotate(self.server.vault.root, params.get("id"), as_of=params.get("asOf")))
+            return
         elif self.mode == "work" and path == "/api/project-updates":
             from .project_updates import read_updates
             result = read_updates(self.server.vault.root, params.get("id"),
-                                  limit=int(params.get("limit", 5)), offset=int(params.get("offset", 0)))
+                                  include_archived=params.get("includeArchived") != "0", limit=int(params.get("limit", 5)), offset=int(params.get("offset", 0)))
             self._send(200, result)
             return
         elif self.mode == "work" and path == "/api/record":
+            current = params.get("view") == "current"
             if "path" in params:
-                record = self.server.vault.linked_record(params["path"], short=params.get("short") == "1")
+                record = self.server.vault.linked_record(params["path"], short=params.get("short") == "1", current=current)
             elif params.get("id"):
-                record = self.server.vault.get_record(params["id"])
+                record = self.server.vault.get_record(params["id"], current=current, revision=params.get("revision"),
+                                                      line=int(params["line"]) if "line" in params else None)
             else:
                 raise ValueError("Укажите ID карточки.")
             self._send(200, {**record, "vaultName": self.server.vault.root.name})
@@ -727,11 +747,13 @@ class Handler(BaseHTTPRequestHandler):
                 source = {"start": number, "path": path.relative_to(root).as_posix()}
                 visible = [(number, lines[number-1])]
             else:
-                record, source = self.reader.open_citation({"id": record_id, "line": number, "ref": ref})
+                record, source = self.reader.open_citation({"id": record_id, "line": number, "ref": ref,
+                                                           "archivePlan": params.get("archivePlan", [None])[0]})
                 if source["start"] < record["body_start"]:
                     visible = ((item["n"], item["text"]) for item in source["lines"])
                 else:
-                    visible = visible_body_lines(record)
+                    cited = {item["n"]: item["text"] for item in source["lines"]}
+                    visible = ((n, cited.get(n, text)) for n, text in visible_body_lines(record))
         except (ValueError, OSError) as error:
             message = str(error) if isinstance(error, ValueError) else "Исходный файл больше не доступен."
             document = self._source_document("Не удалось открыть источник", f"<p>{escape(message)}</p>", back, label)
@@ -794,7 +816,7 @@ def server(root, port=8765, *, mode="demo"):
     vault = Workspace(root)
     reader = WorkspaceQuery(root)
     people = People(root)
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), WorkHandler if mode == "work" else Handler)
+    httpd = VaultHTTPServer(("127.0.0.1", port), WorkHandler if mode == "work" else Handler)
     if mode == "work":
         httpd.daemon_threads = False  # server_close waits for accepted writes to finish.
     httpd.vault, httpd.reader, httpd.guide = vault, reader, guide

@@ -9,7 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import urlencode
 
-from second_brain import project_updates, storage
+from second_brain import history_archive, project_updates, storage
 from second_brain.gantt import Gantt
 from second_brain.planning import Planning
 from second_brain.webserver import server
@@ -62,12 +62,35 @@ class OverviewPageTests(unittest.TestCase):
                   or "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
         if not Path(chrome).is_file():
             self.skipTest("Для проверки навигации нужен Chromium.")
-        # --dump-dom can finish before a local API response arrives.
+        chrome_args = [chrome, "--headless", "--disable-gpu", "--no-first-run", "--no-sandbox",
+                       "--user-data-dir=" + profile]
+        url = f"http://127.0.0.1:{self.http.server_port}/#{route}"
+        node = shutil.which("node")
+        if node:
+            port_file = Path(profile) / "DevToolsActivePort"
+            port_file.unlink(missing_ok=True)
+            with subprocess.Popen([*chrome_args, "--remote-debugging-port=0", "about:blank"],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as browser:
+                try:
+                    helper = Path(__file__).parent / "browser/document.mjs"
+                    result = subprocess.run([node, str(helper), str(port_file), url],
+                                            capture_output=True, text=True, timeout=30)
+                    if result.returncode != 77:  # Older Node versions lack a built-in WebSocket.
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        return result.stdout
+                finally:
+                    try:
+                        browser.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        browser.terminate()
+                        try:
+                            browser.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            browser.kill()
+        # Keep the Chromium-only path for installations without a supported Node.
         for _ in range(3):
             html = subprocess.check_output([
-                chrome, "--headless", "--disable-gpu", "--no-first-run", "--no-sandbox",
-                "--user-data-dir=" + profile, "--virtual-time-budget=5000", "--dump-dom",
-                f"http://127.0.0.1:{self.http.server_port}/#{route}"],
+                *chrome_args, "--virtual-time-budget=5000", "--dump-dom", url],
                 text=True, timeout=20, stderr=subprocess.DEVNULL)
             if '<main id="content" tabindex="-1" aria-busy="true"' not in html:
                 return html
@@ -124,6 +147,85 @@ class OverviewPageTests(unittest.TestCase):
             with self.subTest(invalid=invalid):
                 self.get("/api/record", path=invalid, expected=400)
         self.get("/api/record", path="Notes/Missing.md", expected=404)
+
+    def test_current_project_by_id_path_and_short_name_omits_the_full_markdown(self):
+        old = "Снимок до переключения."
+        body = "## История статусов\n\n" + (old + "\n") * 400
+        path = storage.create(self.root, "project", "Окно поставки", body, status="Согласовано")
+        record = storage.read_record(path)
+        revision = record["revision"]
+        for field, text in [("brief", "Поставка согласована.")] + [("event", f"Решение {n}.") for n in range(4)]:
+            saved = project_updates.write_update(self.root, record["id"], field=field, text=text,
+                                                 actor="manual", revision=revision)
+            revision = saved["revision"]
+        relative = path.relative_to(self.root).as_posix()
+        for selector in ({"id": record["id"]}, {"path": relative}, {"path": path.name, "short": 1}):
+            with self.subTest(selector=selector):
+                current = self.get("/api/record", **selector, view="current")
+                self.assertTrue({"raw", "body", "displayBody", "body_start"}.isdisjoint(current))
+                self.assertEqual((current["status"], current["revision"]), ("Согласовано", revision))
+                self.assertEqual(current["fieldSources"]["status"]["path"], relative)
+                updates = current["projectUpdates"]
+                self.assertEqual((updates["brief"]["text"], updates["total"]), ("Поставка согласована.", 4))
+                self.assertEqual([e["text"] for e in updates["events"]], ["Решение 3.", "Решение 2.", "Решение 1."])
+                self.assertNotIn(old, json.dumps(current, ensure_ascii=False))
+                full = self.get("/api/record", **selector)
+                self.assertEqual(full["raw"], path.read_text())
+                self.assertIn(old, full["body"])
+                self.assertIn("Решение 0.", full["body"])
+
+        with TemporaryDirectory() as profile:
+            route = "record/" + record["id"]
+            compact = self.browser_html(route, profile)
+            self.assertIn("Полный текст и история", compact)
+            self.assertNotIn(old, compact)
+            self.assertNotIn("Решение 0.", compact)
+            full = self.browser_html(route + "?view=full", profile)
+            self.assertIn("К сводке проекта", full)
+            self.assertIn(old, full)
+            self.assertIn("Решение 0.", full)
+            line = next(n for n, text in enumerate(path.read_text().splitlines(), 1) if text == old)
+            self.assertIn('class="source-line highlight"', self.browser_html(route + "?line=" + str(line), profile))
+
+    def test_verified_quarter_opens_as_read_only_markdown_in_the_workspace(self):
+        body = "## Журнал\n" + "".join(f"- 2020-01-{n:02d} — Зимняя проба {n}.\n" for n in range(1, 7))
+        project = storage.create(self.root, "project", "Парфюмерная коллекция", body)
+        original = storage.read_record(project)
+        key = original["id"]
+        sentence = "- 2020-01-01 — Зимняя проба 1."
+        initial = project.read_text().splitlines()
+        old = {"line": initial.index(sentence) + 1, "revision": original["revision"]}
+        plan = history_archive.rotate(self.root, key, as_of="2025-01-01")
+        self.assertEqual(plan["moved"], 1)
+        history_archive.rotate(self.root, key, as_of="2025-01-01", apply=plan["revision"])
+        archive, = plan["archives"]
+        current = self.get("/api/record", id=key, view="current")
+        self.assertEqual(current["projectUpdates"]["archives"], [{"path": archive["path"], "quarter": "2020-Q1"}])
+        self.assertIsNone(current["projectUpdates"]["brief"])
+        read = self.get("/api/record", path=archive["path"])
+        self.assertEqual((read["project_id"], read["type"], read["raw"]),
+                         (key, "markdown", (self.root / archive["path"]).read_text()))
+        self.assertIn("Зимняя проба 1.", read["body"])
+        bookmark = self.get("/api/record", id=key, **old)
+        self.assertEqual(bookmark["path"], read["path"])
+        self.assertEqual(bookmark["raw"].splitlines()[bookmark["resolvedLine"] - 1], sentence)
+        with TemporaryDirectory() as profile:
+            html = self.browser_html("record?" + urlencode({"path": archive["path"]}), profile)
+            self.assertIn("Зимняя проба 1.", html)
+            self.assertIn('href="#record/' + key + '"', html)
+            self.assertNotIn("Редактировать</a>", html)
+            archived = self.browser_html("record/" + key + "?" + urlencode(old), profile)
+            self.assertIn('class="source-line highlight"><span class="line-number">' + str(bookmark["resolvedLine"]) +
+                          '</span><code class="line-text">' + sentence, archived)
+            self.assertNotIn("Карточка изменилась после открытия обзора", archived)
+            kept = "- 2020-01-06 — Зимняя проба 6."
+            project.write_text(project.read_text().replace(kept, "- 2020-01-06 — Исправление."))
+            stale = dict(old, line=initial.index(kept) + 1)
+            html = self.browser_html("record/" + key + "?" + urlencode(stale), profile)
+            self.assertIn("Карточка изменилась после открытия обзора", html)
+            self.assertNotIn('class="source-line highlight"', html)
+        (self.root / archive["path"]).write_text(read["raw"] + "Внешняя правка.\n")
+        self.get("/api/record", path=archive["path"], expected=409)
 
     def test_folder_counts_cover_reports_templates_series_and_plan_groups(self):
         cards = [("Reports/2026/Выпуск.md", "report_issue", "issue"), ("Reports/Неделя.md", "weekly_review", "week"),

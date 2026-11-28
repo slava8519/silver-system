@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 from urllib.parse import unquote, urlsplit
 
-from . import evidence, project_updates as updates, storage
+from . import archive_reader, evidence, project_updates as updates, storage
 from .batch import Batch
 from .routing import Routing
 
@@ -103,7 +103,9 @@ def _receipts(root, issues):
 
 def _decisions(record, path, root):
     managed = set()
+    archive_plan = None
     if record["type"] == "project":
+        archive_plan = archive_reader.latest_plan(record)
         _, rows, hidden = updates._layout(record, strict=True)
         managed.update(hidden)
         for row, _, _ in rows:
@@ -135,6 +137,8 @@ def _decisions(record, path, root):
         quote = text.strip()
         source = {"id": record["id"], "path": path.relative_to(root).as_posix(),
                   "line": line, "quote": quote, "ref": _hash(text)}
+        if archive_plan:
+            source["archivePlan"] = archive_plan
         # Keep an independent line in this same file uniquely attributable after a move.
         yield {"source": source, "text": f"«{plain.strip()}»", "date": match[1]}
 
@@ -266,9 +270,11 @@ def _apply_card(root, path, expected_revision, permissions, receipt_rows, notes,
                                     "reason": f"Основание {source['path']} · {source['line']}: {error}"})
             continue
         _, entries, _ = updates._layout(record)
-        if any(e["field"] == "event" and (any(_key(s) == _key(verified) for s in e["sources"])
+        event_rows = [entry for entry, _, _ in entries if entry["field"] == "event"]
+        event_rows.extend(updates.archived_events(root, path, record))
+        if any((any(_key(s) == _key(verified) for s in e["sources"])
                or (e["manual"] and e["text"] == item["text"] and e["date"] == item["date"]))
-               for e, _, _ in entries):
+               for e in event_rows):
             continue
         body, _ = updates.inbox_update(root, path, record, source=verified, date=item["date"], text=item["text"])
         if body != record["body"]:

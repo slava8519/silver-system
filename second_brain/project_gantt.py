@@ -13,7 +13,7 @@ class ProjectGantt:
 
     def view(self, project_id):
         with storage._vault_lock(self.root, write=False):
-            project = Workspace(self.root).get_record(project_id)
+            project = Workspace(self.root).get_record(project_id, current=True)
             if project["type"] != "project":
                 raise ValueError("Выберите ID проекта для Ганта.")
             fields = ("id", "title", "path", "revision")

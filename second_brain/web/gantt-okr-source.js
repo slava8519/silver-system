@@ -75,6 +75,6 @@ export function sourcePicker(ui, form) {
   files.reset();
   return () => {
     if (!currentFile || !currentLine) throw new Error("Выберите запись и точную строку источника.");
-    return {id: currentFile.id, path: currentFile.path, line: currentLine.line, quote: currentLine.quote, ref: currentLine.ref};
+    return {id: currentFile.id, path: currentFile.path, ...currentLine};
   };
 }

@@ -53,7 +53,7 @@ class IntakeInterfaces(unittest.TestCase):
         self.assertEqual((original["text"], original["start"]), (roles["items"][0]["answer"], 6))
         self.assertEqual(self.cli("overview", "--brief")["peopleCount"], 1)
         folders = self.cli("overview", "--folders", "--limit", "20")
-        self.assertIn({"path": "People", "count": 1}, folders["items"])
+        self.assertIn({"path": "People", "count": 1, "files": 1}, folders["items"])
 
     def test_browser_citation_after_manual_edit_and_private_view(self):
         reader = WorkspaceQuery(self.root)

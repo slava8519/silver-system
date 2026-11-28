@@ -165,7 +165,8 @@ class ProjectUpdatesTests(unittest.TestCase):
         self.assertIsNone(read["brief"])
         self.assertTrue(read["warnings"])
         self.assertEqual(read["events"][0]["text"], "Опубликованный фрагмент.")
-        self.assertTrue(search.search(self.root, "Опубликованный"))
+        self.assertTrue(search.search(self.root, "Опубликованный", history=True))
         self.assertEqual(search.search(self.root, "Тайная"), [])
+        self.assertEqual(search.search(self.root, "Тайная", history=True), [])
         with self.assertRaises(storage.ConflictError):
             self.save("brief", "Перезапись", actor="manual", sources=[])

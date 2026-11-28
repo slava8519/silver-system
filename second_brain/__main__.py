@@ -38,7 +38,7 @@ def command_line():
                           help="вид материала для --arrivals")
     overview.add_argument("--day", help="материалы за день поступления ГГГГ-ММ-ДД или undated")
     overview.add_argument("--direction", metavar="ID", help="выбрать направление для --brief или --states")
-    overview.add_argument("--folders", action="store_true", help="показать только пути папок и количество карточек")
+    overview.add_argument("--folders", action="store_true", help="показать пути папок и число карточек и файлов в каждой")
     overview.add_argument("--limit", type=brief.result_limit, help="число результатов на странице (1–20)")
     overview.add_argument("--offset", type=brief.offset, help="сколько результатов пропустить")
     create = commands.add_parser("create", help="создать направление, проект или заметку")
@@ -77,6 +77,8 @@ def command_line():
     lookup = commands.add_parser("search", help="найти фрагменты с путями и номерами строк")
     lookup.add_argument("query")
     lookup.add_argument("--limit", type=int, default=5)
+    for command in (ask, lookup):
+        command.add_argument("--history", action="store_true", help="искать в журналах и прежних состояниях карточек")
     read = commands.add_parser("read", help="открыть строки источника из выдачи поиска")
     read.add_argument("path")
     read.add_argument("start", type=int)
@@ -184,7 +186,7 @@ def run(args):
         return okr_progress_cli.run(root, args)
     if getattr(args, "project_activity", False):
         return project_activity_cli.run(root, args)
-    if args.command in ("project-updates", "project-update"):
+    if args.command in ("project-updates", "project-update", "project-history-archive"):
         return project_updates_cli.run(root, args)
     if args.command == "refresh-all":
         from .refresh import refresh_all
@@ -201,7 +203,7 @@ def run(args):
         from .query import WorkspaceQuery
         if args.limit and not args.brief:
             raise ValueError("Для ограничения числа выдержек укажите --brief.")
-        data = {"query": args.query}
+        data = {"query": args.query, "history": args.history}
         if args.direction:
             data["directionIds"] = args.direction
         if args.brief:
@@ -261,14 +263,14 @@ def run(args):
     if args.command == "show":
         if args.brief:
             from .workspace import Workspace
-            return brief.record(Workspace(root).get_record(args.id))
+            return brief.record(Workspace(root).get_record(args.id, current=True))
         path = storage.find_record(root, args.id)
         record = storage.read_record(path)
         if record["type"] == "project":
             record["projectStart"] = record.get("project_start")
         return {**record, "path": path.relative_to(root).as_posix()}
     if args.command == "search":
-        return search.search(root, args.query, args.limit)
+        return search.search(root, args.query, args.limit, history=args.history)
     if args.command == "read":
         return search.fragment(root, args.path, args.start, args.end)
     if args.command == "rebuild":
@@ -291,7 +293,7 @@ def main():
           or getattr(args, "planning", False) or getattr(args, "okr", False) or getattr(args, "teams", False)
           or getattr(args, "plan_tree", False) or getattr(args, "okr_progress", False)
           or getattr(args, "reports", False) or getattr(args, "project_activity", False)
-          or args.command in ("map", "weekly-review", "project-updates", "project-update", "refresh-all", "check")
+          or args.command in ("map", "weekly-review", "project-updates", "project-update", "project-history-archive", "refresh-all", "check")
           or (args.command == "list" and isinstance(result, dict))):
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
     else:

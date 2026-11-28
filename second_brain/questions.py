@@ -49,6 +49,8 @@ _CITATION_WORDS = set(word_stems(
     "запись записи каждую каждого каждой решения факта ответа файл строку отдельно "
     "на для по к each every decision fact answer record file line for"))
 _CURRENT = set(word_stems("текущий сейчас сегодня актуальный current now currently today"))
+_HISTORICAL_REQUEST_WORDS = set(word_stems("раньше ранее прежде прежний предыдущий история истории архив архивный "
+                                            "earlier former previous previously history archived"))
 _EXPLICIT_BRIEF = re.compile(r"\b(?:коротко|кратко|вкратце|сводк\w*|резюме|summary)\b", re.I)
 _BRIEF_REQUEST = re.compile(
     r"\b(?:коротко|кратко|вкратце|сводк\w*|резюме|где (?:мы |проект )?(?:сейчас|находимся)|"
@@ -112,7 +114,7 @@ def _mentions(words, record, *, state_query=False):
     # A neuter Russian project name such as «Озеро» keeps the final о in
     # the search tokenizer while its oblique forms («Озера») lose the ending.
     def comparable(tokens):
-        if state_query and record["type"] == "project":
+        if state_query and record["type"] in ("project", "project_history"):
             return [t[:-1] if len(t) > 3 and t.endswith("о") else t for t in tokens]
         return tokens
 
@@ -160,7 +162,7 @@ def _clauses(query, records):
         if len(quoted_names) > 1:
             request = re.sub(r"\b(?:и|and)\b", " ", _QUOTED_NAME.sub(" ", sentence), flags=re.I).strip()
             if (frozenset(word_stems(request)) - _FILLER - _CURRENT) in _STATE_REQUEST:
-                projects = [r for r in records if r["type"] == "project"]
+                projects = [r for r in records if r["type"] in ("project", "project_history")]
                 for quoted in quoted_names:
                     matches = _quoted_projects(quoted, projects)
                     scope = {key: _Mention(0, 0, m.name, True) for key, m in matches.items()}
@@ -171,7 +173,7 @@ def _clauses(query, records):
         anchors = [part for part in parts if part not in bare]
         if bare and len(anchors) == 1:
             anchor = anchors[0]
-            projects = [r for r in records if r["type"] == "project"]
+            projects = [r for r in records if r["type"] in ("project", "project_history")]
             mentions = _named_records(list(word_stems(anchor)), projects, True)
             explicit = re.search(r"\b(?:проект\w*|projects?)\b", anchor, re.I)
             if explicit:
@@ -389,7 +391,8 @@ def _related(term, words):
 
 
 def _best_line(record, details, interval, decisions, goals, named):
-    if named and record["type"] == "project" and not (interval or decisions or goals):
+    history = record.get("history_only", False)
+    if named and record["type"] == "project" and not (history or interval or decisions or goals):
         field = _STATE_REQUEST.get(frozenset(details - _CURRENT))
         if field:
             # Cleared fields stay unknown even when the body retains a history.
@@ -398,7 +401,11 @@ def _best_line(record, details, interval, decisions, goals, named):
             return (len(details), 0, 1), record["field_lines"][field]
     best = None
     sections = []
-    for n, line in visible_body_lines(record):
+    status_request = history and named and _STATE_REQUEST.get(frozenset(details)) == "status"
+    status_ranges = [range(span["archiveStart"], span["archiveStart"] + span["end"] - span["start"] + 1)
+                     for span in record.get("archiveOrigin", {}).get("ranges", ())
+                     if status_request and span["section"] == "История статусов"]
+    for n, line in visible_body_lines(record, history=history):
         heading = _HEADING.match(line)
         if heading:
             level = len(heading[1])
@@ -411,6 +418,10 @@ def _best_line(record, details, interval, decisions, goals, named):
         words = set(word_stems(line))
         if record.get("search_kind"):
             words.update(word_stems(record["search_kind"]))
+        if status_request:
+            words.update(word_stems(" ".join(title for _, title in sections)))
+            if any(n in span for span in status_ranges):
+                words.update(details)
         overlap = sum(_related(term, words) for term in details)
         goal_line = bool(_GOAL_LINE.search(line))
         if goals and not goal_line:
@@ -440,7 +451,7 @@ def _best_line(record, details, interval, decisions, goals, named):
     return best
 
 
-def passages(query, records, *, candidates_for=None):
+def passages(query, records, *, candidates_for=None, history=False):
     """Return distinct source lines in question order and any unanswered parts."""
     picked = {}
     missing = []
@@ -477,6 +488,8 @@ def passages(query, records, *, candidates_for=None):
             mentions = inherited_projects or _named_records(tokens, records, state_query)
             names = {word for m in mentions.values() for word in tokens[m.start:m.end]}
             terms = set(tokens) - names - _FILLER
+            if history:
+                terms -= _HISTORICAL_REQUEST_WORDS
             decisions = any(_DECISION.match(t) for t in terms)
             goals = any(_GOAL.match(t) for t in terms)
             details = {t for t in terms if not _DECISION.match(t) and not _GOAL.match(t)}
