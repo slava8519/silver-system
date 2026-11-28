@@ -118,6 +118,102 @@ class ReportInterfaceTests(unittest.TestCase):
         self.assertLess(len(json.dumps(listing, ensure_ascii=False).encode()), 1500)
         self.assertEqual(listing["items"][0]["id"], saved["id"])
 
+    def test_finalize_the_draft_reviewed_in_the_ui_after_a_concurrent_edit(self):
+        series = self.cli("report-series-create", "Наблюдения", "--template", "free-report",
+                          "--cadence", "weekly", "--start", "2026-11-23")
+        args = ("report-save", "Контрольный образец", "--template", "free-report", "--template-version", "1",
+                "--body", "Кедр заметен через час.", "--series", series["id"], "--start", "2026-11-23",
+                "--end", "2026-11-29", "--request-id", "sample")
+        draft = self.cli(*args, "--draft")
+        self.assertEqual(draft["editorialStatus"], "draft")
+        self.assertTrue(self.cli(*args, "--draft")["replayed"])
+        issue, = self.request("/api/reports/issues?seriesId=" + series["id"])["items"]
+        self.assertEqual((issue["id"], issue["editorialStatus"]), (draft["id"], "draft"))
+        path = self.root / issue["path"]
+        path.write_text(path.read_text().replace("через час.", "через два часа."))
+        changed = path.read_bytes()
+        request = {"id": draft["id"], "revision": draft["revision"]}
+        self.request("/api/reports/finalize", request, status=409)
+        self.assertEqual(path.read_bytes(), changed)
+        reader = self.request("/api/reports/issue?id=" + draft["id"])
+        request["revision"] = reader["revision"]
+        finished = self.request("/api/reports/finalize", request)
+        self.assertEqual(finished["editorialStatus"], "final")
+        self.assertEqual((finished["id"], finished["path"]), (draft["id"], draft["path"]))
+        self.assertNotEqual(reader["revision"], finished["revision"])
+        self.assertNotIn("body", finished)
+        after = path.read_bytes()
+        self.request("/api/reports/finalize", request, status=409)
+        self.assertEqual(self.cli("report-finalize", draft["id"], "--revision", finished["revision"]), finished)
+        self.assertEqual(self.cli(*args, "--draft")["editorialStatus"], "final")
+        self.assertEqual(path.read_bytes(), after)
+        final = self.cli("report-show", draft["id"])
+        self.assertEqual((final["body"], final["finalizedAt"]), (reader["body"], finished["finalizedAt"]))
+        self.assertEqual(self.request("/api/reports/issues?seriesId=" + series["id"])["total"], 1)
+        self.assertEqual(self.cli("report-series-show", series["id"])["nextStart"], "2026-11-30")
+
+    def test_finalize_cli_accepts_a_web_draft_and_preserves_historical_statuses(self):
+        note = self.root / "Notes/Наблюдение.md"
+        note.write_text("Проба на льне\n")
+        card = {"title": "Наблюдение", "templateId": "free-report", "templateVersion": 1,
+                "body": "Проба сохранилась на льне.", "sources": [{"path": "Notes/Наблюдение.md", "line": 1}]}
+        self.assertEqual(self.request("/api/reports/issue", card)["editorialStatus"], "final")
+        self.request("/api/reports/issue", {**card, "draft": "true"}, status=400)
+        draft = self.request("/api/reports/issue", {**card, "draft": True})
+        path = self.root / draft["path"]
+        base = path.read_text().replace('editorial_status: "draft"\n', '')
+        def load_historical(props):
+            historical = base.replace("creation_hash:", props + "creation_hash:", 1)
+            path.write_bytes(historical.replace("\n", "\r\n").encode())
+            return self.cli("report-show", draft["id"])
+
+        for props, status in (("", None), ("draft: false\n", None), ("publication_status: posted\n", "posted"),
+                              ("draft: true\n", "draft")):
+            historical = load_historical(props)
+            self.assertEqual(historical.get("editorialStatus"), status)
+            if status != "draft":
+                before = path.read_bytes()
+                self.request("/api/reports/finalize", {"id": draft["id"], "revision": historical["revision"]}, status=400)
+                self.assertEqual(path.read_bytes(), before)
+        historical = load_historical("publication_status: draft # вручную\ncustom:\n  - сохранено\n")
+        before = path.read_bytes()
+        saved = self.cli("report-finalize", draft["id"], "--revision", historical["revision"])
+        after = path.read_bytes()
+        added = ('editorial_status: "final"\r\nfinalized_at: "' + saved["finalizedAt"] + '"\r\n').encode()
+        self.assertEqual(after.replace(added, b"", 1), before)
+        result = self.cli("report-show", draft["id"])
+        self.assertEqual(result["editorialStatus"], "final")
+        for field in ("path", "body", "templateRevision", "title", "sources"):
+            self.assertEqual(result[field], historical[field])
+
+    def test_template_origin_and_search_use_current_version_before_paging(self):
+        original = self.cli("report-template-show", "meeting-agenda")
+        self.assertEqual((original["origin"], original["path"]), ("builtin", None))
+        self.cli("report-series-create", "Домовой совет", "--template", original["id"],
+                 "--cadence", "monthly", "--start", "2026-11-01")
+        frozen = self.cli("report-template-show", original["id"])
+        self.assertTrue(frozen["path"])
+        self.assertEqual(frozen["origin"], "builtin")
+        definition = {"title": original["title"], "guidance": "", "body": "## Вопросы",
+                      "audience": "Участники совета"}
+        own = self.request("/api/reports/template", definition)
+        second = self.request("/api/reports/template", {**definition, "title": "Повестка совета",
+                                                       "audience": "Жильцы"})
+        revised = self.request("/api/reports/template", {**definition, "title": "Сбор совета",
+                                                        "id": original["id"], "revision": frozen["revision"]})
+        self.assertEqual((revised["origin"], revised["version"]), ("builtin", 2))
+        current = self.cli("report-template-list", "--origin", "builtin", "--match", "СОВЕТА")
+        self.assertEqual([row["id"] for row in current["items"]], [original["id"]])
+        old = self.cli("report-template-list", "--origin", "builtin", "--match", original["title"])
+        self.assertEqual(old["total"], 0)
+        self.assertEqual(self.cli("report-template-list", "--match", original["title"])["items"][0]["id"], own["id"])
+        first = self.cli("report-template-list", "--origin", "custom", "--match", " СОВЕТА ", "--limit", "1")
+        query = urlencode({"origin": "custom", "match": "Совета", "limit": 1, "offset": first["nextOffset"]})
+        last = self.request("/api/reports/templates?" + query)
+        self.assertEqual((first["total"], last["total"], last["nextOffset"]), (2, 2, None))
+        self.assertEqual({(r["id"], r["origin"]) for r in first["items"] + last["items"]},
+                         {(own["id"], "custom"), (second["id"], "custom")})
+
     def test_as_of_date_survives_cli_and_web_separately_from_period(self):
         dates = {"start": "2026-11-16", "end": "2026-11-22", "asOf": "2026-11-23"}
         payload = {"title": "Итоги испытаний", "templateId": "free-report", "templateVersion": 1,
@@ -145,9 +241,23 @@ class ReportInterfaceTests(unittest.TestCase):
         self.assertEqual((page_one["total"], page_two["total"]), (2, 2))
         self.assertEqual({page_one["items"][0]["id"], page_two["items"][0]["id"]}, {weekly["id"], first["id"]})
 
+    def test_status_filter_tracks_the_same_issue_before_and_after_approval(self):
+        params = ["--template", "free-report", "--template-version", "1", "--body", "Сверили условия пробы."]
+        draft = self.cli("report-save", "Кедровая проба", *params, "--draft")
+        self.cli("report-save", "Условия пробы", *params, "--draft")
+        self.cli("report-save", "Кедровая проба за октябрь", *params)
+        query = urlencode({"match": "КЕДРОВАЯ", "status": "draft", "limit": 1})
+        before = self.request("/api/reports/issues?" + query)
+        self.assertEqual((before["total"], before["items"][0]["id"]), (1, draft["id"]))
+        self.cli("report-finalize", draft["id"], "--revision", draft["revision"])
+        self.assertEqual(self.request("/api/reports/issues?" + query)["total"], 0)
+        self.assertEqual(self.cli("report-list", "--match", "кедровая", "--status", "final")["total"], 2)
+        self.request("/api/reports/issues?status=anything", status=400)
+
     def test_invalid_input_and_wrong_binding_do_not_write(self):
         before = sorted(self.root.rglob("*.md"))
         self.request("/api/reports/templates?limit=0", status=400)
+        self.request("/api/reports/templates?origin=unknown", status=400)
         self.request("/api/reports/issue", {"title": "Пустой выпуск"}, status=400)
         self.request("/api/reports/issue", {"title": "Результат", "templateId": "free-report", "templateVersion": 1,
                                            "templateRevision": "0" * 64, "body": "Работа завершена."}, status=409)

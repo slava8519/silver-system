@@ -8,6 +8,7 @@ test("a Codex request carries the chosen format, exact revision and separate sub
   for (const [id, subject] of [["weekly-direction", "Дом"], ["one-on-one", "Анна"], ["topic-agenda", "Выбор пробы"]]) {
     const template = {id, title: "Шаблон владельца", version: 2};
     const text = reportRequestText(vault, {template, title: "К встрече", start: "2026-11-16", end: "2026-11-22", asOf: "2026-11-23"}, "  " + subject + "  ");
+    assert.match(text, /report-save.*--draft/);
     const lines = text.split("\n");
     for (const expected of ["Название выпуска: К встрече", "Шаблон «Шаблон владельца», ID " + id + ", версия 2.",
       "Тема, направление или участник: " + subject, "Период: 2026-11-16 — 2026-11-22.", "Данные на 2026-11-23.", vault.root]) {

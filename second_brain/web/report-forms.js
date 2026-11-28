@@ -29,7 +29,9 @@ function editor(ui, view, vault, heading, key) {
     const status = node("p", "report-status");
     status.setAttribute("role", "status");
     if (draft) status.textContent = "Черновик восстановлен в этой вкладке.";
-    actions.append(submit, status); form.append(feedback, actions);
+    actions.append(submit);
+    if (settings.alternateSubmit) actions.append(settings.alternateSubmit);
+    actions.append(status); form.append(feedback, actions);
     function remember() {
       drafts.set(cacheKey, {fields: Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, v.value])), requestId, sentSignature, ...settings.extra?.()});
     }
@@ -39,9 +41,10 @@ function editor(ui, view, vault, heading, key) {
       event.preventDefault();
       if (submit.disabled) return;
       submit.disabled = true;
+      if (settings.alternateSubmit) settings.alternateSubmit.disabled = true;
       try {
         feedback.replaceChildren();
-        const body = payload();
+        const body = payload(event.submitter);
         const signature = JSON.stringify(body);
         if (sentSignature && sentSignature !== signature) requestId = crypto.randomUUID();
         sentSignature = signature;
@@ -56,7 +59,10 @@ function editor(ui, view, vault, heading, key) {
           try { await settings.conflict(feedback); } catch (readError) { feedback.append(notice(readError.message)); }
         }
         feedback.scrollIntoView({block: "nearest"});
-      } finally { submit.disabled = false; }
+      } finally {
+        submit.disabled = false;
+        if (settings.alternateSubmit) settings.alternateSubmit.disabled = false;
+      }
     });
     return remember;
   }
@@ -181,7 +187,7 @@ export async function issueForm(view, ui, vault, params) {
   seriesList.forEach(item => seriesField.input.append(option(item.id, item.title)));
   seriesField.input.value = e.draft?.fields.seriesId ?? params.get("series") ?? "";
   const templateField = e.field("templateId", "Шаблон", "select", "", true);
-  templates.forEach(item => templateField.input.append(option(item.id, item.title)));
+  ui.fillTemplateOptions(templateField.input, templates);
   templateField.input.value = e.draft?.fields.templateId || params.get("template") || templates[0]?.id || "";
   const head = node("div", "report-fields-row"); head.append(seriesField.label, templateField.label);
   const title = e.field("title", "Название выпуска", "input", "", true);
@@ -255,14 +261,18 @@ export async function issueForm(view, ui, vault, params) {
   templateField.input.addEventListener("change", () => select());
   await select(true);
   if (!view.isConnected) return;
-  e.finish("Сохранить выпуск", "issue", () => {
+  const ready = node("button", secondary, "Сохранить готовый выпуск");
+  ready.type = "submit";
+  e.finish("Сохранить черновик", "issue", submitter => {
     if (loading || !template) throw new Error("Дождитесь загрузки шаблона.");
     if (!series && Boolean(start.input.value) !== Boolean(end.input.value)) throw new Error("Для периода укажите обе даты.");
     if (body.input.value.trim() === template.body.trim()) throw new Error("Заполните текст выпуска по выбранному шаблону.");
     return {title: title.input.value, body: body.input.value, templateId: template.id, templateVersion: template.version, templateRevision: revision, sources: getSources(),
+      ...(submitter === ready ? {} : {draft: true}),
       ...(series ? {seriesId: series.id} : {}), ...(asOf.input.value ? {asOf: asOf.input.value} : {}),
       ...(start.input.value ? {start: start.input.value, end: end.input.value} : {})};
   }, result => route("issue", {id: result.id}), {
+    alternateSubmit: ready,
     extra: () => ({version: template?.version, revision, sources: getSources(false)}),
     conflict: async feedback => {
       const open = link("Сверить шаблон", route("template", {id: template.id, version: template.version}), "text-link");
@@ -281,7 +291,7 @@ export async function seriesForm(view, ui, vault, params) {
   const e = editor(ui, view, vault, "Новая серия", ["series", params.toString()]);
   const title = e.field("title", "Название серии", "input", "", true);
   const template = e.field("templateId", "Шаблон выпусков", "select", "", true);
-  templates.forEach(item => template.input.append(option(item.id, item.title)));
+  ui.fillTemplateOptions(template.input, templates);
   template.input.value = e.draft?.fields.templateId || params.get("template") || templates[0]?.id || "";
   const cadence = e.field("cadence", "Периодичность", "select", "", true);
   Object.entries(cadenceNames).forEach(([key, name]) => cadence.input.append(option(key, name)));

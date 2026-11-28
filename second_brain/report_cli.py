@@ -18,6 +18,9 @@ def add_commands(commands):
     schedules = command("report-series-list", "показать серии и очередные периоды")
     issues.add_argument("--series", metavar="ID", help="выпуски одной серии")
     issues.add_argument("--match", metavar="ТЕКСТ", help="найти выпуск по фрагменту названия")
+    issues.add_argument("--status", choices=("draft", "final", "posted"), help="выбрать выпуски по статусу")
+    templates.add_argument("--origin", choices=("builtin", "custom"), help="коробочные или пользовательские шаблоны")
+    templates.add_argument("--match", metavar="ТЕКСТ", help="найти шаблон по фрагменту названия или адресата")
     schedules.add_argument("--due-on", metavar="YYYY-MM-DD",
                            help="серии, очередной период которых завершится к этой дате включительно")
     for parser in (issues, templates, schedules):
@@ -25,10 +28,12 @@ def add_commands(commands):
         parser.add_argument("--offset", type=brief.offset, default=0)
 
     show = command("report-show", "прочитать сохранённый выпуск и его источники")
+    finalize = command("report-finalize", "утвердить прочитанную ревизию черновика")
+    finalize.add_argument("--revision", required=True, help="ревизия черновика из report-show")
     source = command("report-source", "сверить одно основание выпуска со строкой Markdown")
     template = command("report-template-show", "прочитать текущую или указанную версию шаблона")
     series = command("report-series-show", "прочитать правила серии и даты очередного выпуска")
-    for parser in (show, source, template, series):
+    for parser in (show, finalize, source, template, series):
         parser.add_argument("id", help="ID из списка")
     source.add_argument("--index", type=brief.offset, required=True, help="индекс основания из sources, начиная с 0")
     template.add_argument("--version", type=int, help="номер опубликованной версии")
@@ -53,6 +58,7 @@ def add_commands(commands):
     new_series.add_argument("--cadence", choices=("daily", "weekly", "biweekly", "monthly", "quarterly", "yearly"), required=True)
     new_series.add_argument("--start", required=True, help="первый день начального периода, YYYY-MM-DD")
     new_issue.add_argument("--template-version", type=int, required=True, help="использованная версия шаблона")
+    new_issue.add_argument("--draft", action="store_true", help="сохранить черновик для последующей финализации")
     new_issue.add_argument("--template-revision", help="отпечаток прочитанной версии шаблона")
     new_issue.add_argument("--series", metavar="ID", help="ID серии периодических выпусков")
     new_issue.add_argument("--start", help="первый день периода включительно, YYYY-MM-DD")
@@ -79,14 +85,17 @@ def run(root, args):
     from . import reports
 
     if args.command == "report-list":
-        return reports.list_issues(root, series_id=args.series, match=args.match, limit=args.limit, offset=args.offset)
+        return reports.list_issues(root, series_id=args.series, match=args.match, status=args.status,
+                                   limit=args.limit, offset=args.offset)
     if args.command == "report-template-list":
-        return reports.list_templates(root, limit=args.limit, offset=args.offset)
+        return reports.list_templates(root, origin=args.origin, match=args.match, limit=args.limit, offset=args.offset)
     if args.command == "report-series-list":
         return reports.list_series(root, due_on=args.due_on, limit=args.limit, offset=args.offset)
     if args.command == "report-show":
         result = reports.get_issue(root, args.id)
         return _receipt(result) if args.brief else result
+    if args.command == "report-finalize":
+        return reports.finalize_issue(root, args.id, revision=args.revision)
     if args.command == "report-source":
         return reports.read_issue_source(root, args.id, args.index)
     if args.command == "report-template-show":
@@ -112,5 +121,5 @@ def run(root, args):
         result = reports.save_issue(root, title=args.title, template_id=args.template, template_version=args.template_version,
                                     template_revision=args.template_revision, body=body, sources=sources,
                                     series_id=args.series, start=args.start, end=args.end,
-                                    as_of=args.as_of, request_id=args.request_id)
+                                    as_of=args.as_of, request_id=args.request_id, draft=args.draft)
     return _receipt(result)

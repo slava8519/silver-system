@@ -6,6 +6,9 @@ import {templateChanges} from "./report-template-changes.js";
 
 const cadenceNames = {daily: "Ежедневно", weekly: "Еженедельно", biweekly: "Раз в две недели", monthly: "Ежемесячно", quarterly: "Ежеквартально", yearly: "Ежегодно"};
 const sections = {issues: "Выпуски", series: "Серии", templates: "Шаблоны"};
+export const issueStatusNames = {draft: "Черновик", final: "Готовый выпуск", posted: "Опубликован"};
+const templateOrigins = {custom: "Пользовательские", builtin: "Коробочные"};
+const issueFilters = {draft: "Черновики", final: "Готовые", posted: "Опубликованные"};
 const dates = new Intl.DateTimeFormat("ru", {day: "numeric", month: "short", year: "numeric", timeZone: "UTC"});
 function period(start, end) {
   if (!start) return "";
@@ -25,7 +28,7 @@ export function reportRequestText(vault, {template, series, start, end, title, a
   if (scope.trim()) lines.push("Тема, направление или участник: " + scope.trim());
   if (start || end) lines.push("Период: " + [start, end].filter(Boolean).join(" — ") + ".");
   if (asOf) lines.push("Данные на " + asOf + ".");
-  lines.push("Сверь факты и датировку, соблюдай правила выбранного формата. Покажи читательский текст и основания выводов.", "", "Путь к хранилищу", vault.root);
+  lines.push("Сверь факты и даты с источниками. Сохрани текст и основания в хранилище командой report-save с флагом --draft. Дай ссылку на черновик, чтобы я мог проверить и финализировать его в разделе «Отчёты».", "", "Путь к хранилищу", vault.root);
   return lines.join("\n");
 }
 
@@ -69,12 +72,23 @@ export function reportsView(ui) {
     section.append(node("h3", "", title), node("p", "", text));
     return section;
   }
+  function fillTemplateOptions(select, templates) {
+    for (const [origin, label] of Object.entries(templateOrigins)) {
+      const group = node("optgroup");
+      group.label = label;
+      for (const item of templates.filter(template => template.origin === origin)) {
+        group.append(ui.option(item.id, item.title));
+      }
+      if (group.childElementCount) select.append(group);
+    }
+  }
   function templateCard(item) {
     const card = node("article", "report-template-card");
     const a = link(item.title, route("template", {id: item.id}), "report-item-name");
     const heading = node("h3");
     heading.append(a);
-    card.append(node("span", "report-version", "Версия " + item.version), heading);
+    const version = (item.origin === "builtin" && item.version > 1 ? "Своя редакция · версия " : "Версия ") + item.version;
+    card.append(node("span", "report-version", version), heading);
     if (item.audience) card.append(node("p", "", item.audience));
     const compose = link("Подготовить отчёт →", route("new", {template: item.id}), "text-link");
     compose.setAttribute("aria-label", "Подготовить отчёт по шаблону «" + item.title + "»");
@@ -86,7 +100,8 @@ export function reportsView(ui) {
     let kind = item.seriesTitle || (item.seriesId ? "Выпуск серии" : "Разовый отчёт");
     if (item.kind === "weekly_review") kind = "Недельный обзор плана";
     const details = node("div");
-    details.append(node("h3", "", item.title), node("small", "", kind));
+    const status = issueStatusNames[item.editorialStatus];
+    details.append(node("h3", "", item.title), node("small", "", [status, kind].filter(Boolean).join(" · ")));
     row.append(details, node("span", "report-period", period(item.start, item.end)), node("span", "report-arrow", "→"));
     row.lastElementChild.setAttribute("aria-hidden", "true");
     return row;
@@ -99,18 +114,20 @@ export function reportsView(ui) {
     row.lastElementChild.setAttribute("aria-hidden", "true");
     return row;
   }
-  async function list(box, name, args = {}) {
+  async function list(box, name, args = {}, onTotal) {
     const renderRow = {issues: issueRow, series: seriesRow, templates: templateCard}[name];
     const rows = node("div", name === "templates" ? "report-template-grid" : "report-list");
     const status = node("div");
     const more = button("Показать ещё", secondary, () => load(true));
+    if (name === "templates") more.setAttribute("aria-label", "Показать ещё шаблоны · " + templateOrigins[args.origin]);
     more.hidden = true;
     box.append(rows, status, more);
     let offset = 0;
     async function load(append) {
+      if (more.disabled) return;
       more.disabled = true;
       try {
-        const page = await get(name, {...args, offset, limit: 12});
+        const page = await get(name, {...args, offset, limit: name === "templates" ? 6 : 12});
         if (!box.isConnected) return;
         const added = page.items.map(renderRow);
         rows.append(...added);
@@ -118,20 +135,42 @@ export function reportsView(ui) {
         status.replaceChildren();
         more.hidden = !page.nextOffset;
         offset = page.nextOffset;
+        onTotal?.(page.total);
         if (!page.total) {
-          if (name === "issues" && args.match) {
-            status.append(titled("Выпуски не найдены", "Попробуйте другое название или уберите фильтр."));
+          if (name === "issues" && (args.match || args.status)) {
+            status.append(titled("Выпуски не найдены", "Измените название или сбросьте фильтры."));
           } else if (name === "issues") {
             status.append(titled("Пока нет выпусков", args.seriesId ? "Подготовьте первый отчёт за указанный период." : "Выберите шаблон для первого отчёта."));
-            if (!args.seriesId) await list(status, "templates");
+            if (!args.seriesId) await templateGroups(status);
           } else if (name === "series") status.append(titled("Пока нет серий", "Для повторяющегося отчёта задайте шаблон, периодичность и дату начала. У каждого периода будет свой выпуск."));
-          else status.append(titled("Пока нет шаблонов", "Опишите читателя, правила подачи и структуру выпуска."));
+          else if (!args.match) status.append(node("p", "report-meta", "Здесь появятся созданные вами шаблоны."));
         }
       } catch (error) {
-        status.replaceChildren(notice(error.message), button("Повторить загрузку", secondary, () => load(false)));
+        status.replaceChildren(notice(error.message), button("Повторить загрузку", secondary, () => load(append)));
       } finally { more.disabled = false; }
     }
     await load(false);
+  }
+  async function templateGroups(box, {origin, match} = {}) {
+    const groups = Object.entries(templateOrigins).filter(([key]) => !origin || key === origin);
+    const panels = groups.map(([key, label]) => {
+      const section = node("section", "report-template-group");
+      const heading = node("h2", "work-heading", label);
+      const count = node("span", "report-group-count");
+      heading.append(" ", count);
+      section.append(heading);
+      box.append(section);
+      return {key, section, count};
+    });
+    const empty = titled("Шаблоны не найдены", "Измените поисковый запрос или сбросьте фильтры.");
+    empty.hidden = true;
+    if (match) box.append(empty);
+    await Promise.all(panels.map(({key, section, count}) =>
+      list(section, "templates", {origin: key, ...(match ? {match} : {})}, total => {
+        count.textContent = String(total);
+        section.hidden = Boolean(match) && total === 0;
+        empty.hidden = panels.some(panel => !panel.section.hidden);
+      })));
   }
   function prose(vault, body, path) {
     const doc = recordDocument({path, vaultName:vault.name}, body, ui, {nativeLink:cardLinks(ui, vault.root), reportLinks:true});
@@ -140,7 +179,7 @@ export function reportsView(ui) {
   }
   function prompt(vault, values = () => ({})) {
     const container = node("aside", "report-prompt");
-    container.append(node("h3", "", "Подготовить в Codex"), node("p", "", "Скопируйте запрос в чат. Codex соберёт черновик по записям хранилища и проверит источники."));
+    container.append(node("h3", "", "Подготовить в Codex"), node("p", "", "Скопируйте запрос в чат. Codex сохранит черновик с источниками. Вы сможете проверить и финализировать его в разделе «Выпуски»."));
     const scope = node("input");
     container.append(ui.labelled("Тема, направление или участник (по желанию)", scope));
     const make = () => reportRequestText(vault, values(), scope.value);
@@ -152,23 +191,36 @@ export function reportsView(ui) {
     const box = node("section", "report-catalog");
     box.append(node("h2", "sr-only", sections[screen]));
     view.append(box);
-    const match = screen === "issues" ? params?.get("match")?.trim() : "";
-    if (screen === "issues") {
-      const search = node("form", "report-search");
-      search.setAttribute("role", "search");
-      const input = node("input");
-      input.type = "search"; input.name = "match"; input.value = match || "";
-      const submit = node("button", secondary, "Найти"); submit.type = "submit";
-      search.append(ui.labelled("Поиск по названию выпуска", input), submit);
-      if (match) search.append(link("Сбросить", route("issues"), "text-link"));
-      search.addEventListener("submit", event => {
-        event.preventDefault();
-        ui.go(route("issues", {match: input.value.trim()}));
-      });
-      box.append(search);
-    }
-    await list(box, screen, match ? {match} : {});
-    if (screen === "issues") view.append(prompt(vault));
+    const match = params?.get("match")?.trim() || "";
+    if (screen === "series") return list(box, screen);
+    const isTemplate = screen === "templates";
+    const filterName = isTemplate ? "origin" : "status";
+    const choices = isTemplate ? templateOrigins : issueFilters;
+    const selection = params?.get(filterName);
+    const selected = Object.hasOwn(choices, selection) ? selection : "";
+    const search = node("form", "report-search");
+    search.setAttribute("role", "search");
+    const input = node("input");
+    input.type = "search"; input.name = "match"; input.value = match; input.maxLength = 180;
+    search.append(ui.labelled(screen === "issues" ? "Поиск по названию выпуска" : "Поиск по названию или адресату", input));
+    const filter = node("select");
+    filter.name = filterName;
+    filter.append(ui.option("", isTemplate ? "Все шаблоны" : "Все выпуски"));
+    for (const [key, label] of Object.entries(choices)) filter.append(ui.option(key, label));
+    filter.value = selected;
+    search.append(ui.labelled(isTemplate ? "Происхождение" : "Статус", filter, "work-field report-catalog-filter"));
+    filter.addEventListener("change", () => search.requestSubmit());
+    const submit = node("button", secondary, "Найти"); submit.type = "submit";
+    search.append(submit);
+    if (match || selected) search.append(link("Сбросить", route(screen), "text-link"));
+    search.addEventListener("submit", event => {
+      event.preventDefault();
+      ui.go(route(screen, {match: input.value.trim(), [filterName]: filter.value}));
+    });
+    box.append(search);
+    if (isTemplate) return templateGroups(box, {origin: selected, match});
+    await list(box, screen, {...(match ? {match} : {}), ...(selected ? {status: selected} : {})});
+    view.append(prompt(vault));
   }
 
   async function readIssue(view, id, vault) {
@@ -181,6 +233,8 @@ export function reportsView(ui) {
     const heading = node("h1", "report-paper-title", issue.title);
     const stamp = period(issue.start, issue.end);
     paper.append(heading);
+    const status = node("p", "report-version", issueStatusNames[issue.editorialStatus]);
+    if (issue.editorialStatus) paper.append(status);
     if (issue.releaseDate) paper.append(node("p", "report-meta", "Дата выпуска " + period(issue.releaseDate, issue.releaseDate)));
     if (stamp) paper.append(node("p", "report-meta", stamp));
     if (issue.asOf) paper.append(node("p", "report-meta", "Данные на " + period(issue.asOf, issue.asOf)));
@@ -215,6 +269,41 @@ export function reportsView(ui) {
       paper.append(group);
     }
     if (issue.path) aside.append(cardLinks(ui, vault.root)("Открыть файл в Obsidian ↗", issue.path));
+    if (issue.editorialStatus === "draft") {
+      const feedback = node("div");
+      const finalize = button("Финализировать выпуск", primary, async () => {
+        if (finalize.disabled) return;
+        finalize.disabled = true;
+        feedback.replaceChildren();
+        try {
+          const result = await api("reports/finalize", {id, revision: issue.revision});
+          status.textContent = issueStatusNames[result.editorialStatus];
+          const done = node("p", "report-status", "Выпуск финализирован.");
+          done.setAttribute("role", "status");
+          done.tabIndex = -1;
+          finalize.replaceWith(done);
+          done.focus({preventScroll: true});
+        } catch (error) {
+          if (error.status === 409) {
+            // The first request may have succeeded even if its response never reached this tab.
+            try {
+              const current = await get("issue", {id});
+              if (!view.isConnected) return;
+              if (current.editorialStatus === "final" || current.editorialStatus === "posted") {
+                ui.go(route("issue", {id}));
+                return;
+              }
+            } catch { /* The owner can retry the read using the action below. */ }
+            feedback.append(notice(error.message));
+            feedback.append(button("Перечитать выпуск", secondary, () => ui.go(route("issue", {id}))));
+          } else {
+            feedback.append(notice(error.message));
+            finalize.disabled = false;
+          }
+        }
+      });
+      aside.append(finalize, feedback);
+    }
     layout.append(paper, aside); view.append(layout);
   }
 
@@ -292,6 +381,6 @@ export function reportsView(ui) {
     if (!forms[page]) return catalog(view, "issues", vault);
     const [form, tab] = forms[page];
     bar(view, tab, vault); crumb(view, tab, sections[tab]);
-    await form(view, {...ui, route, get, all, prose, prompt, period, cadenceNames}, vault, params);
+    await form(view, {...ui, route, get, all, prose, prompt, period, cadenceNames, fillTemplateOptions}, vault, params);
   };
 }

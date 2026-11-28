@@ -19,14 +19,15 @@ def read(root, name, data):
     from . import reports
 
     if name == "issues":
-        _fields(data, optional=("limit", "offset", "seriesId", "match"))
-        return reports.list_issues(root, series_id=data.get("seriesId"), match=data.get("match"), **_page(data))
+        _fields(data, optional=("limit", "offset", "seriesId", "match", "status"))
+        return reports.list_issues(root, series_id=data.get("seriesId"), match=data.get("match"),
+                                   status=data.get("status"), **_page(data))
     if name == "issue":
         _fields(data, ("id",))
         return reports.get_issue(root, data["id"])
     if name == "templates":
-        _fields(data, optional=("limit", "offset"))
-        return reports.list_templates(root, **_page(data))
+        _fields(data, optional=("limit", "offset", "origin", "match"))
+        return reports.list_templates(root, origin=data.get("origin"), match=data.get("match"), **_page(data))
     if name == "template":
         _fields(data, ("id",), ("version",))
         version = int(data["version"]) if "version" in data else None
@@ -52,14 +53,17 @@ def write(root, name, data):
         _fields(data, ("title", "templateId", "cadence", "start"), ("requestId",))
         return reports.create_series(root, title=data["title"], template_id=data["templateId"], cadence=data["cadence"],
                                      start=data["start"], request_id=data.get("requestId"))
+    if name == "finalize":
+        _fields(data, ("id", "revision"))
+        return reports.finalize_issue(root, data["id"], revision=data["revision"])
     if name == "issue":
         _fields(data, ("title", "templateId", "templateVersion", "body"),
-                ("sources", "seriesId", "start", "end", "asOf", "requestId", "templateRevision"))
+                ("sources", "seriesId", "start", "end", "asOf", "requestId", "templateRevision", "draft"))
         return reports.save_issue(root, title=data["title"], template_id=data["templateId"],
                                   template_version=data["templateVersion"], body=data["body"], sources=data.get("sources"),
                                   template_revision=data.get("templateRevision"),
                                   series_id=data.get("seriesId"), start=data.get("start"), end=data.get("end"),
-                                  as_of=data.get("asOf"),
+                                  as_of=data.get("asOf"), draft=data.get("draft", False),
                                   request_id=data.get("requestId"))
     raise FileNotFoundError()
 
