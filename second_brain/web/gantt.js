@@ -1,3 +1,4 @@
+import {editorDialogOpen, openEditorDialog} from "./editor-dialog.js";
 import {calendarYear, dateText, dayOf, fitWindow, intervalEnd, isoDay, monthBands, progressText, progressValue, scheduleMarks, scheduleState, shortDay, tickAlignments, ticks, timelineDates, todayDay, visibleFill, windowTitle} from "./gantt-axis.js";
 import {cardLinks, rowInspector} from "./gantt-detail.js";
 import {newWorkForm} from "./gantt-dependencies.js";
@@ -61,7 +62,6 @@ export function planningView(ui) {
     let fitTickLabels = () => {};
     const sizing = new ResizeObserver(() => { fitTickLabels(); drawLinks(); });
     life.signal.addEventListener("abort", () => sizing.disconnect(), {once: true});
-    const createPlace = node("div", "gantt-create-place");
     const detailPlace = node("div", "gantt-detail-place");
     detailPlace.setAttribute("role", "region");
     detailPlace.setAttribute("aria-label", "Подробности Ганта");
@@ -75,13 +75,13 @@ export function planningView(ui) {
       for (const p of catalog.items) chooser.append(option(p.id, p.status === "closed" ? p.title + " · закрыт" : p.title));
       chooser.value = planId;
       chooser.addEventListener("change", () => {
-        if (discard()) go(urlFor(chooser.value));
+        if (!editorDialogOpen()) go(urlFor(chooser.value));
         else chooser.value = planId;
       });
       actions.append(chooser);
     }
     const refreshButton = button("Обновить", "button button-secondary", () => {
-      if (discard()) refresh("Данные обновлены.").catch(report);
+      if (!editorDialogOpen()) refresh("Данные обновлены.").catch(report);
     });
     actions.append(refreshButton);
     const intro = node("header", "gantt-intro");
@@ -135,10 +135,10 @@ export function planningView(ui) {
     if (projectView) context.append(projectFacts, projectUpdates);
     if (!projectView) {
       context.append(planProjects(ui, planId, {open:query.get("projects") === "1",
-        currentPlan:() => plan, canEdit:discard, refreshChart:() => refresh()}));
+        currentPlan:() => plan, refreshChart:() => refresh()}));
     }
     intro.append(connector, context);
-    view.append(intro, createPlace, stage, detailPlace, feedback);
+    view.append(intro, stage, detailPlace, feedback);
     const cycleStatus = closed ? node("div", "cycle-heading-status") : null;
     const cycleDate = closed ? node("time", "cycle-stamp") : null;
     function showCycleLinks() {
@@ -157,29 +157,11 @@ export function planningView(ui) {
       context.append(cycleStatus);
     } else if (!projectView) {
       const close = button("Закрыть цикл…", "button button-secondary", () => {
-        if (!discard()) return;
-        stage.hidden = detailPlace.hidden = close.disabled = true;
-        const panel = cyclePreview(ui, planId, root, () => {
-          createPlace.replaceChildren();
-          stage.hidden = detailPlace.hidden = close.disabled = false;
-          (context.hidden ? disclosure : close).focus();
-        }, () => go(chartURL(selected)));
-        createPlace.replaceChildren(panel); panel.querySelector("h2").focus();
+        cyclePreview(ui, plan, root, close, () => go(chartURL(selected)));
       });
       actions.append(close);
     }
     function report(error) { if (view.isConnected) feedback.replaceChildren(notice(error.message)); }
-    function discard() {
-      if (createPlace.firstChild) {
-        createPlace.querySelector("input,h2")?.focus();
-        return false;
-      }
-      return !inspector || inspector.canLeave();
-    }
-    document.addEventListener("click", event => {
-      const a = event.target.closest?.('a[href^="#"]');
-      if (a && a.target !== "_blank" && view.isConnected && !event.metaKey && !event.ctrlKey && !discard()) event.preventDefault();
-    }, {capture: true, signal: life.signal});
     function setSelected(id) {
       selected = id;
       history.replaceState(null, "", chartURL(id, scope));
@@ -211,13 +193,13 @@ export function planningView(ui) {
     async function refresh(message = "") {
       const sequence = ++refreshVersion;
       const fresh = await api(source);
-      if (!view.isConnected || sequence !== refreshVersion) return;
+      if (!view.isConnected || sequence !== refreshVersion || editorDialogOpen()) return;
       if (!projectView && fresh.status !== plan.status) { go(chartURL(selected)); return; }
       const task = selected && hasSelection(fresh, selected) ? await readDetail(selected, fresh).catch(error => {
         if (error.status !== 404) throw error;
         return null;
       }) : null;
-      if (!view.isConnected || sequence !== refreshVersion || (!message && inspector?.editing())) return;
+      if (!view.isConnected || sequence !== refreshVersion || editorDialogOpen()) return;
       if (!message && detail?.revision === task?.revision && JSON.stringify(detail?.relations) === JSON.stringify(task?.relations) && JSON.stringify(plan) === JSON.stringify(fresh)) return;
       plan = fresh;
       if (closed) showCycleLinks();
@@ -226,21 +208,25 @@ export function planningView(ui) {
       heading.textContent = plan.title;
       if (selected && ((!closed && !task) || !hasSelection(plan, selected))) setSelected(null);
       detail = selected ? task : null;
-      drawChart(); drawInspector();
+      const pane = detailPlace.querySelector(".gantt-inspector")?.dataset.pane;
+      const inspectorTop = detailPlace.scrollTop;
+      drawChart(); drawInspector(pane);
+      detailPlace.scrollTop = inspectorTop;
       if (message) {
         feedback.textContent = message;
         detailPlace.querySelector(".gantt-pane-heading h2")?.focus({preventScroll: true});
       }
     }
+    function refreshAfterEdit(message) {
+      return refresh(message).catch(report);
+    }
     function onFocus() {
       if (!view.isConnected) { dispose(); return; }
-      if (!inspector?.editing() && !createPlace.firstChild && !dragging && !document.hidden) refresh().catch(report);
+      if (!editorDialogOpen() && !dragging && !document.hidden) refresh().catch(report);
     }
     window.addEventListener("focus", onFocus, {signal: life.signal});
     async function choose(id, proposal, keepFocus = false) {
-      if (createPlace.firstChild) { discard(); return; }
-      const wasEditing = inspector?.editing();
-      if (wasEditing && (id !== selected || proposal) && !discard()) return;
+      if (editorDialogOpen()) return;
       if (id === selected && (detail || closed) && !proposal) return;
       const previous = selected;
       const sequence = ++refreshVersion;
@@ -390,7 +376,7 @@ export function planningView(ui) {
       group.setAttribute("aria-label", "Группировка задач");
       group.dataset.control = "group"; group.value = grouping;
       group.addEventListener("change", () => {
-        if (!discard()) { group.value = grouping; return; }
+        if (editorDialogOpen()) { group.value = grouping; return; }
         updateChart(() => { grouping = group.value; }, "group");
         if (describeRow(plan, selected) && !hasVisibleSelection()) choose(null);
       });
@@ -439,7 +425,7 @@ export function planningView(ui) {
         if (scope === "unlinked") scopeRows = plan.items.filter(row => !linked.has(row.id));
         else if (included) scopeRows = plan.items.filter(row => included.has(row.id));
         filter.addEventListener("change", () => {
-          if (!discard()) { filter.value = scope; return; }
+          if (editorDialogOpen()) { filter.value = scope; return; }
           updateChart(() => { scope = filter.value; folded.clear(); }, "scope");
           history.replaceState(null, "", chartURL(selected, scope));
           if (selected && !(describeRow(plan, selected) ? hasVisibleSelection() : scopeRows.some(row => row.id === selected))) choose(null);
@@ -448,15 +434,11 @@ export function planningView(ui) {
         controls.append(filter);
       } else scope = "";
       const addWork = button(projectView ? "+ Работа" : "+ Веха", "gantt-tool", () => {
-        if (!discard()) return;
-        createPlace.replaceChildren(newWorkForm(ui, plan, async item => {
-          createPlace.replaceChildren();
-          if (item) {
-            setSelected(item.id);
-            await refresh(projectView ? "Работа добавлена в проект." : "Веха добавлена в план.");
-          } else stage.querySelector(".gantt-add-milestone")?.focus();
-        }));
-        createPlace.querySelector("input").focus();
+        if (editorDialogOpen()) return;
+        newWorkForm(ui, plan, addWork, item => {
+          setSelected(item.id);
+          return refreshAfterEdit(projectView ? "Работа добавлена в проект." : "Веха добавлена в план.");
+        });
       });
       addWork.classList.add("gantt-add-milestone");
       addWork.setAttribute("aria-label", projectView ? "Добавить работу в проект" : "Добавить веху");
@@ -820,7 +802,7 @@ export function planningView(ui) {
       function dragDate(event, grip, lane, row, field) {
         if (!event.isPrimary || event.button !== 0) return;
         const initialX = event.clientX, width = lane.getBoundingClientRect().width;
-        if (!discard()) return;
+        if (editorDialogOpen()) return;
         ++refreshVersion; dragging = true;
         grip.setPointerCapture(event.pointerId);
         const tip = node("span", "gantt-drag-tip");
@@ -883,7 +865,7 @@ export function planningView(ui) {
       board.scrollLeft = scrollLeft;
     }
 
-    function drawInspector() {
+    function drawInspector(pane) {
       inspector = null;
       const group = describeRow(plan, selected);
       if (group?.kind === "project" && detail) {
@@ -894,19 +876,12 @@ export function planningView(ui) {
         const title = node("h2", "", detail.title); title.tabIndex = -1;
         header.append(title, close);
         project.append(header, projectUpdatesPanel(ui, {...detail, vaultName:vault},
-          () => refresh("Сводка проекта сохранена.").catch(report)));
-        const editing = () => !!project.querySelector("form");
-        inspector = {editing, canLeave: () => {
-          if (!editing()) return true;
-          feedback.textContent = "Сохраните правку или нажмите «Отмена».";
-          project.querySelector("textarea")?.focus();
-          return false;
-        }};
+          () => refreshAfterEdit("Сводка проекта сохранена.")));
         detailPlace.replaceChildren(project);
       } else if (group && detail) {
         inspector = rowInspector(ui, {task:{...detail, readOnly:closed || detail.readOnly}, group, plan, root,
-          refresh, deselect: () => choose(null), selectMember: member => {
-            if (!discard()) return;
+          pane, refresh:refreshAfterEdit, deselect: () => choose(null), selectMember: member => {
+            if (editorDialogOpen()) return;
             if (scope && !scopeRows.some(row => row.id === member)) {
               scope = "";
               drawChart();
@@ -922,7 +897,7 @@ export function planningView(ui) {
         const rowUI = {...ui, api: (path, payload) => api(path,
           payload && path.startsWith("plan/") ? {...payload, ...membership} : payload)};
         inspector = rowInspector(rowUI, {task: detail, row: plan.items.find(r => r.id === selected), plan, root,
-          refresh, deselect: () => choose(null), selectRelated: async id => {
+          pane, refresh:refreshAfterEdit, deselect: () => choose(null), selectRelated: async id => {
             const row = plan.items.find(item => item.id === id);
             if (!row) return;
             if (grouping === "tree") revealTask(plan.tree, id, folded);
@@ -936,33 +911,36 @@ export function planningView(ui) {
         detailPlace.replaceChildren(inspector.element);
         if (!projectView && plan.items.length > 1) {
           const row = plan.items.find(item => item.id === selected);
-          const box = node("details", "work-panel gantt-parent-editor");
-          const label = plan.items.find(item => item.id === row?.parentId)?.title;
-          box.append(node("summary", "text-link", label ? "Подработа · " + label : "Вложенность работы"));
-          box.addEventListener("toggle", () => {
-            if (!box.open || box.querySelector("form")) return;
-            const form = node("form", "work-tools");
-            const parents = node("select");
-            parents.append(option("", "Верхний уровень"));
+          const parent = plan.items.find(item => item.id === row.parentId);
+          const parents = button(parent ? "Подработа · " + parent.title : "Вложенность работы", "gantt-action gantt-parent-editor", () => {
+            const form = node("form", "gantt-form");
+            const select = node("select");
+            select.append(option("", "Верхний уровень"));
             for (const other of plan.items) {
-              if (other.id !== row.id && !other.missing) parents.append(option(other.id,
-                other.title + (other.projectTitle ? " · " + other.projectTitle : "")));
+              if (other.id !== row.id && !other.missing) select.append(option(other.id, other.title + (other.projectTitle ? " · " + other.projectTitle : "")));
             }
-            parents.value = row.parentId || "";
-            const save = node("button", "button button-secondary", "Сохранить");
+            select.value = row.parentId || "";
+            const save = node("button", "button button-primary", "Сохранить");
             save.type = "submit";
-            const status = node("span"); status.setAttribute("role", "status");
-            form.append(ui.labelled("Родительская работа в этом плане", parents), save, status);
-            form.addEventListener("submit", async e => {
-              e.preventDefault(); save.disabled = true;
+            const status = node("div"); status.setAttribute("role", "status");
+            const commands = node("div", "work-tools");
+            commands.append(save, button("Отмена", "button button-secondary", () => dialog.requestClose()));
+            form.append(ui.labelled("Родительская работа в этом плане", select), commands, status);
+            const dialog = openEditorDialog({title:"Вложенность работы", context:row.title, trigger:parents,
+              content:form, initialFocus:select, isBusy:() => save.disabled});
+            form.addEventListener("submit", async event => {
+              event.preventDefault();
+              if (save.disabled) return;
+              select.disabled = save.disabled = true;
               try {
-                await api("plan/parent", {id: planId, taskId: row.id, parentId: parents.value || null, revision: plan.revision});
-                await refresh("Вложенность сохранена.");
-              } catch (error) { status.replaceChildren(notice(error.message)); save.disabled = false; }
+                await api("plan/parent", {id: planId, taskId: row.id, parentId: select.value || null, revision: plan.revision});
+                dialog.close();
+                await refreshAfterEdit("Вложенность сохранена.");
+              } catch (error) { status.replaceChildren(notice(error.message)); }
+              finally { select.disabled = save.disabled = false; }
             });
-            box.append(form);
           });
-          detailPlace.append(box);
+          detailPlace.append(parents);
         }
       } else {
         const fold = node("details", "gantt-overview-fold");

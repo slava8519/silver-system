@@ -1,3 +1,5 @@
+import {markdownEditor} from "./markdown-editor.js";
+import {documentForm} from "./document-form.js";
 import {sourcePicker} from "./gantt-okr-source.js";
 
 const drafts = new Map();
@@ -6,7 +8,7 @@ const secondary = "button button-secondary";
 function editor(ui, view, vault, heading, key) {
   const {node, button, labelled, notice, go, api} = ui;
   const form = node("form", "report-form");
-  form.append(node("h2", "report-form-title", heading));
+  if (heading) form.append(node("h2", "report-form-title", heading));
   const feedback = node("div", "report-feedback");
   view.append(form);
   const cacheKey = JSON.stringify([vault.root, key]);
@@ -18,6 +20,7 @@ function editor(ui, view, vault, heading, key) {
     if (tag === "textarea") input.rows = 4;
     input.value = draft?.fields[name] ?? value;
     fields[name] = input;
+    if (name === "body") return {input, label:markdownEditor(ui, input, {label, render:text => ui.prose(vault, text)})};
     return {input, label: labelled(label, input)};
   }
   let requestId = draft?.requestId || crypto.randomUUID();
@@ -41,6 +44,7 @@ function editor(ui, view, vault, heading, key) {
       event.preventDefault();
       if (submit.disabled) return;
       submit.disabled = true;
+      form.inert = true;
       if (settings.alternateSubmit) settings.alternateSubmit.disabled = true;
       try {
         feedback.replaceChildren();
@@ -60,37 +64,23 @@ function editor(ui, view, vault, heading, key) {
         }
         feedback.scrollIntoView({block: "nearest"});
       } finally {
+        form.inert = false;
         submit.disabled = false;
         if (settings.alternateSubmit) settings.alternateSubmit.disabled = false;
       }
     });
     return remember;
   }
-  return {field, form, draft, finish, button};
+  return {field, form, draft, finish};
 }
 
-function preview(ui, vault, field) {
-  const {node, prose} = ui;
-  const details = node("details", "report-preview");
-  details.append(node("summary", "", "Предпросмотр текста"));
-  const output = node("div");
-  details.append(output);
-  function refresh() {
-    if (details.open) output.replaceChildren(prose(vault, field.value));
-  }
-  details.addEventListener("toggle", refresh);
-  field.addEventListener("input", refresh);
-  return details;
-}
-
-export async function templateForm(view, ui, vault, params) {
-  const {node, button, route, get} = ui;
+export async function templateForm(view, ui, vault, params, trigger) {
+  const {node, route, get} = ui;
   const id = params.get("id"), version = params.get("version");
   const current = id ? await get("template", {id}) : null;
   const selected = version && Number(version) !== current?.version ? await get("template", {id, version}) : current;
   if (!view.isConnected) return;
-  const e = editor(ui, view, vault, current ? "Новая версия шаблона" : "Новый шаблон", ["template", id, version]);
-  let revision = e.draft?.revision || current?.revision;
+  const e = editor(ui, view, vault, current ? "" : "Новый шаблон", ["template", id, version]);
   if (current) e.form.append(node("p", "report-meta", "Основа — версия " + selected.version + ". Текущая версия — " + current.version + "."));
   const title = e.field("title", "Название шаблона", "input", selected?.title, true);
   const audience = e.field("audience", "Для кого предназначен отчёт", "input", selected?.audience);
@@ -98,25 +88,20 @@ export async function templateForm(view, ui, vault, params) {
   guidance.input.rows = guidance.input.value.length > 900 ? 12 : 5;
   const body = e.field("body", "Структура текста в Markdown", "textarea", selected?.body, true);
   body.input.rows = 10;
-  e.form.append(title.label, audience.label, guidance.label, body.label, preview(ui, vault, body.input));
-  e.finish(current ? "Сохранить новую версию" : "Создать шаблон", "template", () => ({
-    title: title.input.value, audience: audience.input.value, guidance: guidance.input.value, body: body.input.value,
-    ...(id ? {id, revision} : {})
-  }), saved => route("template", {id: saved.id, version: saved.version}), {
-    extra: () => ({revision}),
-    conflict: async feedback => {
-      const latest = await get("template", {id});
-      const details = node("details", "report-preview");
-      details.open = true;
-      details.append(node("summary", "", "Текущая версия " + latest.version + " · " + latest.title),
-        node("p", "report-value", latest.audience), node("p", "report-value", latest.guidance), node("pre", "report-raw", latest.body));
-      feedback.append(details, button("Сверил с текущей версией", secondary, () => {
-        revision = latest.revision;
-        e.form.dispatchEvent(new Event("change"));
-        feedback.replaceChildren(node("p", "report-status", "Проверьте текст и нажмите «Сохранить новую версию»."));
-      }));
-    }
-  });
+  e.form.append(title.label, audience.label, guidance.label, body.label);
+  const target = saved => route("template", {id:saved.id, version:saved.version});
+  const fields = {title:title.input, audience:audience.input, guidance:guidance.input, body:body.input};
+  if (current) {
+    documentForm(ui, {form:e.form, fields, original:current, read:() => get("template", {id}),
+      valuesOf:item => Object.fromEntries(Object.keys(fields).map(key => [key, String(item[key] ?? "").replace(/\r\n?/g, "\n")])),
+      save:(values, baseline, revision) => ui.api("reports/template", {...values, id, revision}),
+      onSaved:saved => ui.go(target(saved)), saveLabel:"Сохранить новую версию",
+      dialog:{title:"Новая версия шаблона", context:selected.title, trigger, initialFocus:body.input}
+    });
+  } else {
+    e.finish("Создать шаблон", "template", () => Object.fromEntries(
+      Object.entries(fields).map(([key, field]) => [key, field.value])), target);
+  }
 }
 
 function sourceList(ui, form, initial, changed) {
@@ -206,7 +191,7 @@ export async function issueForm(view, ui, vault, params) {
   const rules = node("div"); instructions.append(ruleHeading, rules);
   const periodNote = node("p", "report-status");
   dates.append(periodNote);
-  e.form.append(head, title.label, dates, instructions, body.label, preview(ui, vault, body.input));
+  e.form.append(head, title.label, dates, instructions, body.label);
   const getSources = sourceList(ui, e.form, e.draft?.sources || [], () => e.form.dispatchEvent(new Event("change")));
   let template = null, series = null, token = 0, loading = false, revision;
   const initialVersion = e.draft?.version || params.get("version");

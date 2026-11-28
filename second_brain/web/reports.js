@@ -1,3 +1,5 @@
+import {documentForm} from "./document-form.js";
+import {markdownEditor} from "./markdown-editor.js";
 import {cardLinks} from "./gantt-detail.js";
 import {copyControls, reportPlainText} from "./report-document.js";
 import {recordDocument} from "./record-document.js";
@@ -241,10 +243,26 @@ export function reportsView(ui) {
     const documentView = prose(vault, issue.body, issue.path);
     const first = documentView.firstElementChild;
     if (first?.tagName === "H2" && first.textContent === issue.title) first.remove();
+    const edit = button("Редактировать текст", secondary, () => {
+      const form = node("form");
+      const body = node("textarea");
+      body.name = "body";
+      body.value = issue.body;
+      body.required = true;
+      form.append(markdownEditor(ui, body, {label:"Текст выпуска", render:text => prose(vault, text, issue.path)}));
+      documentForm(ui, {form, fields:{body}, original:issue,
+        valuesOf:latest => ({body:latest.body.replace(/\r\n?/g, "\n")}),
+        read:() => get("issue", {id}),
+        save:(values, baseline, revision) => api("reports/edit", {id, revision, body:values.body}),
+        onSaved:ui.refreshAfterEdit,
+        dialog:{title:"Редактировать отчёт", context:issue.title, trigger:edit, initialFocus:body}
+      });
+    });
+    edit.dataset.editDocument = "";
     paper.append(copyControls(ui, [
       {label: "Скопировать текст", primary: true, text: () => reportPlainText(issue.body), success: "Текст выпуска скопирован."},
       {label: "Markdown", ariaLabel: "Скопировать Markdown", text: () => issue.body, success: "Markdown скопирован."}
-    ]), documentView);
+    ], [edit]), documentView);
     aside.append(node("h3", "", "Сведения о выпуске"));
     if (issue.templateId || issue.seriesId) {
       const info = node("div", "report-side-note");
@@ -277,6 +295,8 @@ export function reportsView(ui) {
         feedback.replaceChildren();
         try {
           const result = await api("reports/finalize", {id, revision: issue.revision});
+          issue.revision = result.revision;
+          issue.editorialStatus = result.editorialStatus;
           status.textContent = issueStatusNames[result.editorialStatus];
           const done = node("p", "report-status", "Выпуск финализирован.");
           done.setAttribute("role", "status");
@@ -335,7 +355,14 @@ export function reportsView(ui) {
     aside.append(history);
     const changes = templateChanges(ui, get, item);
     if (changes) paper.append(changes);
-    aside.append(link(current === item.version ? "Редактировать шаблон" : "Взять за основу новой версии", route("edit-template", {id, version: item.version}), secondary));
+    const edit = button(current === item.version ? "Редактировать шаблон" : "Взять за основу новой версии", secondary, async () => {
+      edit.disabled = true;
+      try { await templateForm(view, formUI, vault, new URLSearchParams({id, version:item.version}), edit); }
+      catch (error) { if (edit.isConnected) edit.after(notice(error.message)); }
+      finally { edit.disabled = false; }
+    });
+    edit.dataset.editTemplate = "";
+    aside.append(edit);
     layout.append(paper, aside); view.append(layout, prompt(vault, () => ({template: item})));
   }
 
@@ -369,6 +396,7 @@ export function reportsView(ui) {
     view.append(schedule);
   }
 
+  const formUI = {...ui, route, get, all, prose, prompt, period, cadenceNames, fillTemplateOptions};
   return async function show(view, page, params) {
     const vault = await api("planning-vault");
     if (!view.isConnected) return;
@@ -376,11 +404,18 @@ export function reportsView(ui) {
     const id = params.get("id");
     if (page === "issue") return readIssue(view, id, vault);
     if (page === "template") return readTemplate(view, id, params.get("version"), vault);
+    if (page === "edit-template" && id) {
+      const version = params.get("version");
+      history.replaceState(null, "", route("template", {id, version}));
+      await readTemplate(view, id, version, vault);
+      if (view.isConnected) view.querySelector("[data-edit-template]").click();
+      return;
+    }
     if (page === "series-detail") return readSeries(view, id, vault);
     const forms = {new: [issueForm, "issues"], "edit-template": [templateForm, "templates"], "new-series": [seriesForm, "series"]};
     if (!forms[page]) return catalog(view, "issues", vault);
     const [form, tab] = forms[page];
     bar(view, tab, vault); crumb(view, tab, sections[tab]);
-    await form(view, {...ui, route, get, all, prose, prompt, period, cadenceNames, fillTemplateOptions}, vault, params);
+    await form(view, formUI, vault, params);
   };
 }

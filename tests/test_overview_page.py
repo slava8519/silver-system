@@ -93,7 +93,11 @@ class OverviewPageTests(unittest.TestCase):
             for route, title in (("new/note", "Новая карточка"), ("edit/" + healthy["id"], "Редактировать карточку")):
                 with self.subTest(route=route):
                     html = self.browser_html(route, profile)
-                    self.assertIn(f'class="work-title">{title}</h1>', html)
+                    if route.startswith("edit/"):
+                        self.assertIn(f'id="editor-dialog-title" tabindex="-1">{title}</h2>', html)
+                        self.assertIn('class="editor-dialog" aria-labelledby="editor-dialog-title" open', html)
+                    else:
+                        self.assertIn(f'class="work-title">{title}</h1>', html)
                     self.assertIn('class="work-panel work-editor"', html)
 
     def test_record_links_open_managed_and_plain_markdown_inside_the_card_folders(self):

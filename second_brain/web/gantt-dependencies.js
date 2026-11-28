@@ -1,15 +1,15 @@
+import {openEditorDialog} from "./editor-dialog.js";
 import {dateText} from "./gantt-axis.js";
 
-export function newWorkForm(ui, plan, finish) {
+export function newWorkForm(ui, plan, trigger, finish) {
   const {node, option, labelled, button, notice, api} = ui;
   const project = plan.scope === "project";
-  const form = node("form", "gantt-form gantt-new-milestone");
+  const form = node("form", "gantt-form");
   const requestId = crypto.randomUUID();
   const title = node("input"); title.name = project ? "taskTitle" : "milestoneTitle"; title.required = true;
   const due = node("input"); due.type = "date"; due.name = "due";
   const kind = node("select"), scope = node("select");
-  form.append(node("h2", "", project ? "Новая работа" : "Новая веха"),
-    labelled(project ? "Название работы" : "Название вехи", title));
+  form.append(labelled(project ? "Название работы" : "Название вехи", title));
   if (project) {
     kind.append(option("task", "Задача"), option("milestone", "Веха"));
     form.append(labelled("Тип работы", kind));
@@ -27,7 +27,7 @@ export function newWorkForm(ui, plan, finish) {
   form.append(labelled("Согласованный срок (необязательно)", due));
   const tools = node("div", "work-tools");
   const submit = node("button", "button button-primary", project ? "Добавить в проект" : "Добавить в план"); submit.type = "submit";
-  tools.append(submit, button("Отмена", "button button-secondary", () => finish()));
+  tools.append(submit, button("Отмена", "button button-secondary", () => dialog.requestClose()));
   const output = node("div");
   form.append(tools, output);
   form.addEventListener("submit", async event => {
@@ -40,11 +40,15 @@ export function newWorkForm(ui, plan, finish) {
       payload[field] = id;
     }
     for (const control of form.elements) control.disabled = true;
-    try { await finish(await api(project ? "plan/project-work" : "plan/milestone", payload)); }
-    catch (error) { output.replaceChildren(notice(error.message)); }
+    try {
+      const item = await api(project ? "plan/project-work" : "plan/milestone", payload);
+      dialog.close();
+      await finish(item);
+    } catch (error) { output.replaceChildren(notice(error.message)); }
     finally { for (const control of form.elements) control.disabled = false; }
   });
-  return form;
+  const dialog = openEditorDialog({title: project ? "Новая работа" : "Новая веха", context: plan.title, trigger,
+    content: form, initialFocus: title, isBusy: () => submit.disabled});
 }
 
 export function dependencySection(ui, settings) {
@@ -95,7 +99,6 @@ export function dependencySection(ui, settings) {
   function editRelation(action, trigger) {
     const adding = action === "add";
     const form = openForm(adding ? "Что должно завершиться до начала этой работы?" : "Какую зависимость убрать?");
-    if (!form) return;
     const select = node("select"); select.name = "predecessor"; select.required = true;
     const query = node("input"); query.type = "search"; query.name = "taskSearch";
     const hint = node("small", "gantt-byline"); hint.setAttribute("role", "status");
@@ -143,7 +146,6 @@ export function dependencySection(ui, settings) {
       } catch (error) { feedback.replaceChildren(notice(error.message)); }
       finally { for (const control of form.elements) control.disabled = false; }
     });
-    (adding ? query : select).focus();
   }
   return group;
 }
@@ -214,5 +216,4 @@ export function scenarioForm(ui, settings) {
       feedback.replaceChildren(notice(error.status === 409 ? error.message + " Рассчитайте сценарий ещё раз." : error.message));
     } finally { for (const control of form.elements) control.disabled = false; }
   });
-  forecast.focus();
 }

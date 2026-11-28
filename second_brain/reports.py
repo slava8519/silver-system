@@ -362,8 +362,8 @@ def list_issues(root, *, series_id=None, match=None, status=None, limit=20, offs
         return _page(items, limit, offset)
 
 
-def issue_content(record):
-    """Parse one issue's editable Markdown and its stored source metadata."""
+def _issue_parts(record):
+    """Separate authored text from the exact stored Markdown of the evidence appendix."""
     lines = record["body"].splitlines(keepends=True)
     first = record["body_start"]
     code, unclosed = fenced_lines(lines)
@@ -397,9 +397,14 @@ def issue_content(record):
             saved.append(source)
     if start is not None and end is None:
         raise ValueError(f"В выпуске не закрыт раздел оснований, строка {first + start}.")
-    if start is not None:
-        del lines[start:end + 1]
-    return "".join(lines).strip("\r\n"), saved
+    if start is None:
+        return record["body"], "", "", saved
+    return "".join(lines[:start]), "".join(lines[start:end + 1]), "".join(lines[end + 1:]), saved
+
+
+def issue_content(record):
+    before, _, after, saved = _issue_parts(record)
+    return (before + after).strip("\r\n"), saved
 
 
 def _extract_issue(root, id):
@@ -462,6 +467,15 @@ def _render_issue(root, body, template, sources):
     return "\n".join([*lines, "", _END, ""])
 
 
+def _validate_issue_prose(body):
+    body_lines = body.splitlines()
+    code, _ = fenced_lines(body_lines)
+    if any(n not in code and (_FOOTER in line or _END in line) for n, line in enumerate(body_lines)):
+        raise ValueError("В текст выпуска попала служебная разметка источников.")
+    if not any(line.strip() and not re.match(r"^\s*#{1,6}(?:\s|$)", line) for line in body_lines):
+        raise ValueError("Добавьте текст выпуска под заголовками.")
+
+
 def save_issue(root, *, title, body, template_id, template_version, sources=None, series_id=None,
                start=None, end=None, request_id=None, template_revision=None, as_of=None, draft=False):
     root = Path(root).resolve()
@@ -469,12 +483,7 @@ def save_issue(root, *, title, body, template_id, template_version, sources=None
         raise ValueError("Для поля draft укажите true или false.")
     title = _text(title, "Название", 180, line=True)
     body = _text(body, "Текст выпуска", 120000)
-    body_lines = body.splitlines()
-    code, _ = fenced_lines(body_lines)
-    if any(n not in code and (_FOOTER in line or _END in line) for n, line in enumerate(body_lines)):
-        raise ValueError("В текст выпуска попала служебная разметка источников.")
-    if not any(line.strip() and not re.match(r"^\s*#{1,6}(?:\s|$)", line) for line in body.splitlines()):
-        raise ValueError("Добавьте текст выпуска под заголовками.")
+    _validate_issue_prose(body)
     if start is not None or end is not None or series_id is not None:
         first, last = _day(start), _day(end)
         if first > last:
@@ -536,18 +545,72 @@ def save_issue(root, *, title, body, template_id, template_version, sources=None
         return {**get_issue(root, identifier), "replayed": False}
 
 
+def _issue_path(root, id):
+    _id(id)
+    matches = [path for path in storage.iter_markdown_paths(root, folders=("Reports",))
+               if storage._header_has(storage.read_header(path), b"id:", id)]
+    if not matches:
+        raise FileNotFoundError("Выпуск не найден.")
+    if len(matches) != 1:
+        raise storage.ConflictError("Один ID найден в нескольких файлах отчётов.")
+    return matches[0]
+
+
+def _edited_issue_body(record, prose, newline):
+    before, appendix, after = record["body"], "", ""
+    authored = record["type"] == "report_issue"
+    if authored:
+        before, appendix, after, _ = _issue_parts(record)
+    previous = (before + after).strip("\r\n").replace("\r\n", "\n").replace("\r", "\n")
+    if previous == prose:
+        return record["body"]
+    prose = prose.replace("\n", newline)
+    result = prose + (newline if record["body"].endswith(("\n", "\r")) else "")
+    if not authored:
+        return result
+    _validate_issue_prose(prose)
+    # A manual addition can follow the managed appendix. Keep its position
+    # if either side is still identifiable in the edited text.
+    suffix = after.rstrip("\r\n")
+    prefix = before.lstrip("\r\n")
+    if appendix and suffix and prose.endswith(suffix) and (prose == suffix or prose[:-len(suffix)].endswith(newline)):
+        result = prose[:-len(suffix)] + appendix + after
+    elif after.strip() and prefix and prose.startswith(prefix):
+        result = prefix + appendix + prose[len(prefix):] + newline
+    elif appendix:
+        result = prose + newline * 2 + appendix
+    visible, kept, tail, _ = _issue_parts({**record, "body": result})
+    if kept != appendix or (visible + tail).strip("\r\n") != prose:
+        raise ValueError("Проверьте границы блоков кода возле раздела оснований выпуска.")
+    return result
+
+
+def edit_issue(root, id, *, revision, body):
+    """Update only the reviewed issue's prose. Keep properties, source metadata and citation order."""
+    root = Path(root).resolve()
+    if not isinstance(revision, str) or not revision:
+        raise ValueError("Для сохранения нужна прочитанная версия выпуска.")
+    body = _text(body, "Текст выпуска", 3 * 1024 * 1024).replace("\r\n", "\n").replace("\r", "\n")
+    with storage._write_lock(root):
+        path = _issue_path(root, id)
+        data = path.read_bytes()
+        record, header = storage._parse_record(path, data, kinds=("report_issue", "weekly_review"))
+        if record["id"] != id or record["revision"] != revision:
+            raise storage.ConflictError("Выпуск изменился. Перечитайте его перед сохранением.")
+        newline = storage.markdown_newline(record["body"], header)
+        body = _edited_issue_body(record, body, newline)
+        if not header.endswith((b"\n", b"\r")):
+            header += newline.encode()
+        updated = header + body.encode()
+        storage.replace_bytes(path, data, updated)
+        return {"id": id, "path": path.relative_to(root).as_posix(), "revision": sha256(updated).hexdigest()}
+
+
 def finalize_issue(root, id, *, revision):
     """Approve the draft revision the owner read, preserving the issue and its source appendix."""
     root = Path(root).resolve()
-    _id(id)
     with storage._write_lock(root):
-        matches = [path for path in storage.iter_markdown_paths(root, folders=("Reports",))
-                   if storage._header_has(storage.read_header(path), b"id:", id)]
-        if not matches:
-            raise FileNotFoundError("Черновик выпуска не найден.")
-        if len(matches) != 1:
-            raise storage.ConflictError("Один ID найден в нескольких файлах отчётов.")
-        path = matches[0]
+        path = _issue_path(root, id)
         data = path.read_bytes()
         try:
             record, header = storage._parse_record(path, data, kinds=("report_issue",), optional_scalars=_ISSUE_FIELDS)

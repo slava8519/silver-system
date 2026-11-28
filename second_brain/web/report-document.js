@@ -217,7 +217,7 @@ export function reportPlainText(markdown) {
   return lines.join("\n");
 }
 
-export function copyControls(ui, options) {
+export function copyControls(ui, options, additionalActions = []) {
   const {node, button, labelled} = ui;
   const group = node("div", "report-copy");
   const actions = node("div", "work-tools");
@@ -251,6 +251,7 @@ export function copyControls(ui, options) {
     if (ariaLabel) control.setAttribute("aria-label", ariaLabel);
     actions.append(control);
   }
+  actions.append(...additionalActions);
   group.append(actions, feedback, manual);
   return group;
 }

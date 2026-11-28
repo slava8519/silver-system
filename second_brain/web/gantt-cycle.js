@@ -1,3 +1,4 @@
+import {openEditorDialog} from "./editor-dialog.js";
 import {dateLabels, dateText, dayOf} from "./gantt-axis.js";
 import {cardLinks} from "./gantt-detail.js";
 import {readinessText} from "./gantt-detail-text.js";
@@ -24,20 +25,25 @@ export function archiveStamp(plan) {
   return {text: "Архивный снимок", date: null, label: "Фиксация снимка"};
 }
 
-export function cyclePreview(ui, planId, root, cancel, showClosed) {
+export function cyclePreview(ui, plan, root, trigger, showClosed) {
   const {node, button, counted, api, notice} = ui;
   const markdownLink = cardLinks(ui, root);
   const panel = node("section", "cycle-preview");
-  const title = node("h2", "", "Итог перед закрытием");
-  title.tabIndex = -1;
+  const planId = plan.id;
   const content = node("div");
   const actions = node("div", "work-tools");
   const feedback = node("div");
   feedback.setAttribute("role", "status");
   const confirm = button("Закрыть цикл и сохранить итог", "button button-primary", save);
-  const dismiss = button("Отмена", "button button-secondary", cancel);
+  const dismiss = button("Отмена", "button button-secondary", () => dialog.requestClose());
   actions.append(confirm, dismiss);
-  panel.append(title, content, actions, feedback);
+  panel.append(content, actions, feedback);
+  const dialog = openEditorDialog({title:"Итог перед закрытием", context:plan.title, trigger,
+    content:panel, isBusy:() => dismiss.disabled});
+  function finish() {
+    dialog.close();
+    showClosed();
+  }
   let revision = null;
 
   async function load() {
@@ -48,7 +54,7 @@ export function cyclePreview(ui, planId, root, cancel, showClosed) {
     try {
       const proposal = await api("plan/close/preview", {id: planId});
       if (!panel.isConnected) return;
-      if (proposal.status === "closed") { showClosed(); return; }
+      if (proposal.status === "closed") { finish(); return; }
       const caption = node("p", "gantt-context", "В снимок войдут состав плана и даты на момент закрытия.");
       if (proposal.okrCounts) {
         const {objectives, results} = proposal.okrCounts;
@@ -106,13 +112,12 @@ export function cyclePreview(ui, planId, root, cancel, showClosed) {
     confirm.disabled = dismiss.disabled = true;
     try {
       await api("plan/close/apply", {id: planId, revision});
-      if (panel.isConnected) showClosed();
+      if (panel.isConnected) finish();
     } catch (error) {
       if (panel.isConnected) retry(error);
     } finally { dismiss.disabled = false; }
   }
   load();
-  return panel;
 }
 
 export function snapshotInspector(ui, {plan, row, root, urlFor, deselect}) {

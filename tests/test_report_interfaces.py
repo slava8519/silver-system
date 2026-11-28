@@ -118,6 +118,83 @@ class ReportInterfaceTests(unittest.TestCase):
         self.assertLess(len(json.dumps(listing, ensure_ascii=False).encode()), 1500)
         self.assertEqual(listing["items"][0]["id"], saved["id"])
 
+    def test_edit_issue_preserves_the_source_appendix_header_and_manual_text_across_interfaces(self):
+        authored = {"title": "Состояние сервиса", "templateId": "free-report", "templateVersion": 1,
+                    "body": "Резерв доступен.", "draft": True, "sources": [{"path": "Home.md", "line": 1}]}
+        issue = self.request("/api/reports/issue", authored)
+        path = self.root / issue["path"]
+        manual = path.read_text().replace("created_at:", "# Пояснение владельца\ncustom: [1, 2]\ncreated_at:", 1)
+        manual += "\nПримечание после оснований.\n"
+        path.write_bytes(manual.replace("\n", "\r\n").encode())
+        load = "/api/reports/issue?id=" + issue["id"]
+        reader = self.request(load)
+        normalized = reader["body"].replace("\r\n", "\n")
+        version = {"id": issue["id"], "revision": reader["revision"]}
+        no_op = self.request("/api/reports/edit", {**version, "body": normalized})
+        self.assertEqual(no_op["revision"], version["revision"])
+        previous = path.read_bytes()
+        proposed = normalized.replace("Резерв доступен.", "**Резерв** доступен.")
+        saved = self.request("/api/reports/edit", {**version, "body": proposed})
+        self.assertEqual(set(saved), {"id", "path", "revision"})
+        self.assertEqual(path.read_bytes(), previous.replace("Резерв".encode(), "**Резерв**".encode(), 1))
+        self.assertEqual(self.cli("report-show", issue["id"])["sources"], reader["sources"])
+        self.request("/api/reports/edit", {**version, "body": "Устаревшая редакция."}, status=409)
+        self.request("/api/reports/finalize", version, status=409)
+        now = self.request(load)
+        self.assertEqual(now["body"].replace("\r\n", "\n"), proposed)
+        self.assertEqual((now["revision"], now["editorialStatus"]), (saved["revision"], "draft"))
+        self.cli("report-finalize", issue["id"], "--revision", saved["revision"])
+        final = self.request(load)
+        edited_text = self.root.parent / "correction.md"
+        edited_text.write_text("Решение принято.\n\n```md\n<!-- second-brain:report-evidence -->\n```")
+        self.cli("report-edit", issue["id"], "--revision", final["revision"], "--body-file", str(edited_text))
+        reread = self.request(load)
+        self.assertEqual(reread["body"].replace("\r\n", "\n"), edited_text.read_text())
+        for key in ("id", "path", "sources", "templateRevision", "finalizedAt", "editorialStatus"):
+            self.assertEqual(reread[key], final[key])
+        self.assertEqual(self.request(reread["sources"][0]["href"].split("#")[0]).count('id="cited-line"'), 1)
+        previous = path.read_bytes()
+        for invalid in ("", "# Заголовок", "Текст\n<!-- /second-brain:report-evidence -->"):
+            self.request("/api/reports/edit", {"id": issue["id"], "revision": reread["revision"],
+                                               "body": invalid}, status=400)
+        self.assertEqual(path.read_bytes(), previous)
+
+    def test_edit_preserves_historical_posted_status_and_refuses_duplicate_ids(self):
+        issue = self.request("/api/reports/issue", {"title": "Проба на льне", "templateId": "free-report",
+                                                   "templateVersion": 1, "body": "Начало наблюдения."})
+        path = self.root / issue["path"]
+        path.write_text(path.read_text().replace('editorial_status: "final"', 'publication_status: posted # вручную'))
+        reader = self.cli("report-show", issue["id"])
+        body = "Нота раскрылась через час.\n" * 3500
+        saved = self.request("/api/reports/edit", {"id": issue["id"], "revision": reader["revision"], "body": body})
+        after = self.cli("report-show", issue["id"])
+        self.assertEqual(after["editorialStatus"], "posted")
+        self.assertEqual(after["body"], body.rstrip())
+        (self.root / "Reports/Дубль.md").write_bytes(path.read_bytes())
+        self.request("/api/reports/edit", {"id": issue["id"], "revision": saved["revision"], "body": "Другое."}, status=409)
+
+    def test_edit_weekly_prose_preserves_closed_plan_and_the_same_report(self):
+        plan = self.cli("plan-create", "Домашние дела")["id"]
+        self.cli("plan-close", plan, "--apply", self.cli("plan-close", plan)["revision"])
+        weekly = self.cli("weekly-review", plan, "--save")
+        reader = self.request("/api/reports/issue?id=" + weekly["id"])
+        body = reader["body"] + "\n\nЧерез неделю проверим фильтр."
+        saved = self.cli("report-edit", weekly["id"], "--revision", reader["revision"], "--body", body)
+        self.assertEqual(self.cli("report-show", weekly["id"]), {**reader, "body": body, "revision": saved["revision"]})
+        self.assertTrue(self.cli("weekly-review", plan, "--save")["replayed"])
+
+    def test_large_card_edit_preserves_line_endings_and_unchanged_properties(self):
+        body = "Контрольная строка.\n" * 4000
+        card = self.request("/api/records/create", {"type": "note", "title": "Журнал", "body": body}, status=201)
+        path = self.root / card["path"]
+        previous = path.read_bytes().replace(b"\n", b"\r\n")
+        path.write_bytes(previous)
+        current = self.request("/api/record?" + urlencode({"id": card["id"]}))
+        edited = self.request("/api/records/edit", {"id": card["id"], "revision": current["revision"],
+                                                    "body": body + "Последняя строка.\n"})
+        self.assertEqual(path.read_bytes(), previous + "Последняя строка.\r\n".encode())
+        self.assertEqual(self.cli("show", card["id"])["revision"], edited["revision"])
+
     def test_finalize_the_draft_reviewed_in_the_ui_after_a_concurrent_edit(self):
         series = self.cli("report-series-create", "Наблюдения", "--template", "free-report",
                           "--cadence", "weekly", "--start", "2026-11-23")

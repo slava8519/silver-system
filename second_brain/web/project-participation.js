@@ -1,3 +1,5 @@
+import {openEditorDialog} from "./editor-dialog.js";
+
 export function relationshipFacts(row, counted) {
   const facts = [];
   if (row.explicitlyIncluded) facts.push("Проект включён в план");
@@ -15,7 +17,7 @@ export function eligibleWork(projectItems, planItems) {
   return projectItems.filter(row => !existing.has(row.id));
 }
 
-export function planProjects(ui, planId, {open, currentPlan, canEdit, refreshChart}) {
+export function planProjects(ui, planId, {open, currentPlan, refreshChart}) {
   const {api, node, button, link, option, labelled, notice, counted} = ui;
   const box = node("details", "plan-projects");
   const heading = node("summary", "text-link", "Проекты плана");
@@ -24,29 +26,20 @@ export function planProjects(ui, planId, {open, currentPlan, canEdit, refreshCha
   status.setAttribute("role", "status");
   box.append(heading, body, status);
   let reading = 0;
-  let activeEditor = null;
   let saving = false;
 
-  function closeEditor() {
-    activeEditor?.remove();
-    activeEditor = null;
-  }
-
-  async function edit(host, trigger, build) {
-    if (saving || !canEdit()) return;
-    if (activeEditor?.parentElement === host) { closeEditor(); trigger.focus(); return; }
-    closeEditor();
+  async function edit(trigger, build) {
     status.textContent = "";
     const form = node("form", "plan-project-form");
-    host.append(form);
-    activeEditor = form;
+    const dialog = openEditorDialog({title:trigger.textContent, context:currentPlan().title, trigger, content:form,
+      isBusy:() => saving});
     const errorBox = node("div");
     form.append(node("p", "gantt-context", "Загрузка…"));
     try {
       const config = await build();
       if (!form.isConnected) return;
       form.replaceChildren();
-      const cancel = button("Отмена", "text-link plan-project-action", () => { closeEditor(); trigger.focus(); });
+      const cancel = button("Отмена", "button button-secondary", () => dialog.requestClose());
       const controls = node("div", "work-tools");
       const save = node("button", "button button-secondary", config.submit);
       save.type = "submit";
@@ -69,7 +62,7 @@ export function planProjects(ui, planId, {open, currentPlan, canEdit, refreshCha
       (select || cancel).focus({preventScroll:true});
       form.addEventListener("submit", async event => {
         event.preventDefault();
-        if (saving || !canEdit()) return;
+        if (saving) return;
         saving = save.disabled = cancel.disabled = true;
         if (select) select.disabled = true;
         errorBox.replaceChildren();
@@ -77,20 +70,23 @@ export function planProjects(ui, planId, {open, currentPlan, canEdit, refreshCha
           const result = await config.write(select?.value);
           if (!box.isConnected) return;
           status.textContent = result.changed === false ? "Состав плана уже актуален." : config.saved;
+          dialog.close();
           await refreshChart();
           if (!box.isConnected) return;
           await load();
           heading.focus({preventScroll:true});
         } catch (error) {
+          if (!form.isConnected) { status.replaceChildren(notice(error.message)); return; }
           errorBox.append(notice(error.message));
           if (error.status === 409) {
             errorBox.append(button("Перечитать состав", "text-link plan-project-action", async () => {
               try {
+                dialog.close();
                 await refreshChart();
                 await load();
                 heading.focus({preventScroll:true});
               } catch (refreshError) {
-                errorBox.replaceChildren(notice(refreshError.message));
+                status.replaceChildren(notice(refreshError.message));
               }
             }));
           }
@@ -100,18 +96,17 @@ export function planProjects(ui, planId, {open, currentPlan, canEdit, refreshCha
         }
       });
     } catch (error) {
-      if (form.isConnected) form.replaceChildren(notice(error.message), button("Закрыть", "text-link plan-project-action", () => { closeEditor(); trigger.focus(); }));
+      if (form.isConnected) form.replaceChildren(notice(error.message), button("Закрыть", "text-link plan-project-action", () => dialog.requestClose()));
     }
   }
 
   function action(host, label, build) {
-    const control = button(label, "text-link plan-project-action", () => edit(host, control, build));
+    const control = button(label, "text-link plan-project-action", () => edit(control, build));
     host.append(control);
   }
 
   async function load() {
     const version = ++reading;
-    closeEditor();
     body.replaceChildren(node("p", "gantt-context", "Загрузка проектов…"));
     try {
       const catalog = await api("plan/activity");

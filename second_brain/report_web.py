@@ -56,6 +56,9 @@ def write(root, name, data):
     if name == "finalize":
         _fields(data, ("id", "revision"))
         return reports.finalize_issue(root, data["id"], revision=data["revision"])
+    if name == "edit":
+        _fields(data, ("id", "revision", "body"))
+        return reports.edit_issue(root, data["id"], revision=data["revision"], body=data["body"])
     if name == "issue":
         _fields(data, ("title", "templateId", "templateVersion", "body"),
                 ("sources", "seriesId", "start", "end", "asOf", "requestId", "templateRevision", "draft"))

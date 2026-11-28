@@ -42,7 +42,8 @@ RUNTIME_FILES = {
     """,
     "second_brain/web": """
         about-map.css about.css about.html activity-help.css activity-help.js app.css app.js
-        batch.js capture.js demo-cleanup.js direction-states.js gantt-axis.js gantt-cycle.js
+        batch.js capture.js demo-cleanup.js direction-states.js document-form.js editor-dialog.js editor.css
+        markdown-editor.js gantt-axis.js gantt-cycle.js
         gantt-dependencies.js gantt-detail-text.js gantt-detail.js gantt-inspector.css gantt-layers.css
         gantt-layers.js gantt-okr-detail.js gantt-okr-forms.js gantt-okr-source.js gantt-okr-tracking.js
         gantt-okr-values.js gantt-okr.js gantt-rows.js gantt-tree.js gantt-work-events.js gantt.css

@@ -5,6 +5,9 @@ import { planningView } from "./gantt.js";
 import { activityHelp } from "./activity-help.js";
 import { mountRelationMap } from "./relation-map.js";
 import { relationMapHelp } from "./relation-map-help.js";
+import { documentForm } from "./document-form.js";
+import { markdownEditor } from "./markdown-editor.js";
+import { editorDialogOpen, leaveEditor } from "./editor-dialog.js";
 import { recordDocument, recordSection } from "./record-document.js";
 import { projectUpdatesPanel } from "./project-updates.js";
 import { mountDirectionStates } from "./direction-states.js";
@@ -148,7 +151,20 @@ import { showVaultCheck } from "./vault-check.js";
 
   const intake = intakeViews({node, link, button, option, section, labelled, notice, api, go, counted, pageHead, recordURL});
   const planning = planningView({node, link, button, option, labelled, notice, api, go, counted, pageHead, embedded, compact});
-  const reports = reportsView({node, link, button, option, labelled, notice, api, go, counted, pageHead, embedded});
+  const reports = reportsView({node, link, button, option, labelled, notice, api, go, counted, pageHead, embedded, refreshAfterEdit});
+
+  async function refreshAfterEdit() {
+    const current = location.hash;
+    await render();
+    if (current !== location.hash) return;
+    const trigger = main.querySelector("[data-edit-document]");
+    if (!trigger) return;
+    const status = node("span", "report-status");
+    status.setAttribute("role", "status");
+    trigger.after(status);
+    status.textContent = "Изменения сохранены.";
+    trigger.focus({preventScroll:true});
+  }
 
   function fieldValue(record, key) {
     const value = record[key];
@@ -265,13 +281,22 @@ import { showVaultCheck } from "./vault-check.js";
     return facts;
   }
 
-  async function recordPage(recordId, params, version) {
+  async function recordPage(recordId, params, version, openEditor = false) {
     const selector = recordId ? {id:recordId} : {path:params.get("path"), short:params.get("short") || ""};
     const record = await api("record?" + new URLSearchParams(selector));
     const id = record.id;
     if (version !== pageVersion) return;
-    const actions = record.type === "markdown" ? [] : [link("Показать связи", "#map?" + new URLSearchParams({id}), "text-link"),
-      link("Редактировать", "#edit/" + encodeURIComponent(id), "button button-secondary")];
+    const actions = [];
+    const edit = button("Редактировать", "button button-secondary", () => openCardEditor());
+    edit.dataset.editDocument = "";
+    async function openCardEditor() {
+      if (edit.disabled || editorDialogOpen()) return;
+      edit.disabled = true;
+      try { await editPage(id, null, params, version, edit); }
+      catch (error) { if (edit.isConnected) edit.after(notice(error.message)); }
+      finally { edit.disabled = false; }
+    }
+    if (record.type !== "markdown") actions.push(link("Показать связи", "#map?" + new URLSearchParams({id}), "text-link"), edit);
     if (record.type === "project") actions.unshift(link("Гант проекта", "#project-gantt/" + encodeURIComponent(id), "button button-primary"));
     const header = pageHead((typeNames[record.type] || "Markdown") + " · " + record.vaultName, record.title, ...actions);
     header.classList.add("record-head");
@@ -334,6 +359,7 @@ import { showVaultCheck } from "./vault-check.js";
       if (heading) heading.scrollIntoView({block:"start"});
       else meta.append(node("p", "muted", "Раздел «" + params.get("section") + "» не найден."));
     }
+    if (openEditor && edit.isConnected) await openCardEditor();
     if (!record.direction && record.type !== "direction") return;
     const mapURL = "#map?" + new URLSearchParams({id});
     if (record.type !== "direction") {
@@ -368,123 +394,88 @@ import { showVaultCheck } from "./vault-check.js";
     shortcuts.before(links);
   }
 
-  async function editPage(id, kind, params, version) {
-    const [context, selected] = await Promise.all([
-      api("workspace/context?directions=1"), id ? api("record?" + new URLSearchParams({id})) : null
-    ]);
-    if (version !== pageVersion) return;
-    let record = selected;
-    const directions = context.directions;
-    main.replaceChildren(pageHead(context.name, record ? "Редактировать карточку" : compact ? "Создать проект" : "Новая карточка"));
+  async function editPage(id, kind, params, version, trigger) {
+    const read = () => api("record?" + new URLSearchParams({id}));
+    const [context, record] = await Promise.all([api("workspace/context?directions=1"), id ? read() : null]);
+    if (version !== pageVersion || (trigger && !trigger.isConnected)) return;
     const form = node("form","work-panel work-editor");
-    const controls = {};
+    const properties = node("div", "editor-property-fields");
+    if (record) {
+      const details = node("details", "editor-properties");
+      details.append(node("summary", "", "Свойства карточки"), properties);
+      form.append(details);
+      properties.addEventListener("invalid", () => { details.open = true; }, true);
+    } else {
+      main.replaceChildren(pageHead(context.name, compact ? "Создать проект" : "Новая карточка"), form);
+      form.append(properties);
+    }
     const type = node("select");
     for (const [k,v] of Object.entries(typeNames)) type.append(option(k,v));
     type.value = record?.type || kind || "note";
     if (!type.value) type.value = "note";
     type.disabled = Boolean(id) || compact;
-    form.append(labelled("Тип карточки", type));
-    function input(key, name, value, tag = "input") {
+    properties.append(labelled("Тип карточки", type));
+    const controls = {};
+    function input(key, caption, tag = "input", parent = properties) {
       const field = node(tag);
       field.name = key;
-      field.value = value || "";
       controls[key] = field;
-      form.append(labelled(name, field));
+      parent.append(labelled(caption, field));
       return field;
     }
-    const title = input("title","Название",record?.title);
+    const title = input("title", "Название");
     title.required = true;
-    const area = node("select");
-    area.name = "direction";
-    area.append(option("", "Без направления"), ...directions.map(r => option(r.id,r.title)));
+    const area = input("direction", "Направление", "select");
+    area.append(option("", "Без направления"), ...context.directions.map(r => option(r.id,r.title)));
     const initialDir = record ? record.direction : params.get("direction");
-    if (initialDir && !directions.some(r => r.id === initialDir)) area.append(option(initialDir, "Направление не найдено · " + initialDir));
-    area.value = initialDir || "";
-    controls.direction = area;
-    const dirGroup = labelled("Направление",area);
-    form.append(dirGroup);
-    const aliases = input("aliases","Другие названия (по одному в строке)",record?.aliases?.join("\n"),"textarea");
+    if (initialDir && !context.directions.some(r => r.id === initialDir)) area.append(option(initialDir, "Направление не найдено · " + initialDir));
+    const aliases = input("aliases", "Другие названия (по одному в строке)", "textarea");
     aliases.rows = 2;
-    const body = input("body","Текст",record?.body,"textarea");
-    body.rows = 6;
-    const meta = node("div","editor-metadata");
+    const meta = node("div", "editor-metadata");
     for (const [key,caption] of Object.entries(fields)) {
-      const field = input(key,caption,record?.[key]);
+      const field = input(key, caption, "input", meta);
       if (key === "projectStart") field.type = "date";
-      meta.append(field.parentElement);
     }
-    form.append(meta);
+    properties.append(meta);
     function syncType() {
-      dirGroup.hidden = type.value === "direction";
+      area.parentElement.hidden = type.value === "direction";
       meta.hidden = type.value !== "project";
     }
     type.addEventListener("change",syncType);
     syncType();
-    const feedback = node("div", "editor-feedback");
-    const submit = node("button","button button-primary","Сохранить");
-    submit.type = "submit";
-    const actions = node("div","work-tools");
-    actions.append(submit, link("Отмена",id ? recordURL(id) : compact ? "#activity" : "#records","button button-secondary"));
-    form.append(feedback, actions);
-    main.append(form);
-    const initial = () => Object.fromEntries(Object.entries(controls).map(([k,f]) => [k,f.value]));
-    let baseline = initial();
-    let requestId = crypto.randomUUID();
-    let sentSignature;
-    async function resolveConflict() {
-      const latest = await api("record?" + new URLSearchParams({id}));
-      if (!form.isConnected) return;
-      const compare = node("details","record-source");
-      compare.open = true;
-      compare.append(node("summary", "", "Текущая версия файла"), node("pre","record-body",latest.raw));
-      const merge = button("Сверил с файлом — продолжить правку","button button-secondary",() => {
-        const values = {...latest, aliases: latest.aliases.join("\n")};
-        for (const [key,field] of Object.entries(controls)) {
-          const current = typeof values[key] === "string" ? values[key].replace(/\r\n?/g, "\n") : "";
-          if (field.value === baseline[key]) field.value = current;
-          baseline[key] = current;
-        }
-        record = latest;
-        feedback.replaceChildren(node("p","muted","Проверьте поля перед сохранением."));
-        submit.disabled = false;
-      });
-      feedback.append(compare, merge);
+    const body = node("textarea");
+    body.name = "body";
+    controls.body = body;
+    form.append(markdownEditor({node, button}, body, {label:"Текст карточки", render:text =>
+      recordDocument(record || {}, text, {link, embedded})}));
+    function valuesOf(item) {
+      return Object.fromEntries(Object.keys(controls).map(key => {
+        const value = key === "aliases" ? item.aliases?.join("\n") : item[key];
+        return [key, String(value ?? "").replace(/\r\n?/g, "\n")];
+      }));
     }
-    form.addEventListener("submit", async event => {
-      event.preventDefault();
-      if (submit.disabled) return;
-      const values = initial();
-      const payload = {type: type.value, title: values.title.trim(), body: values.body,
-        aliases: values.aliases.split("\n").map(s => s.trim()).filter(Boolean),
-        direction: type.value === "direction" ? null : values.direction || null};
-      if (!payload.title) { title.focus(); return; }
-      if (type.value === "project") for (const key of Object.keys(fields)) payload[key] = values[key].trim() || null;
-      if (record) {
-        delete payload.type;
-        for (const key of Object.keys(payload)) {
-          if (values[key] === baseline[key]) delete payload[key];
+    const initial = valuesOf(record || {direction:initialDir});
+    for (const [key, field] of Object.entries(controls)) field.value = initial[key];
+    let requestId = crypto.randomUUID(), sentSignature;
+    documentForm({node, button, notice}, {form, fields:controls, original:record, valuesOf,
+      read:record && read,
+      dialog:record && {title:"Редактировать карточку", context:record.title, initialFocus:body, trigger},
+      cancel:!record && link("Отмена", compact ? "#activity" : "#records", "button button-secondary"),
+      save(values, baseline, revision) {
+        const payload = {title:values.title.trim(), body:values.body, aliases:values.aliases.split("\n").map(v => v.trim()).filter(Boolean),
+          direction:type.value === "direction" ? null : values.direction || null};
+        if (type.value === "project") for (const key of Object.keys(fields)) payload[key] = values[key].trim() || null;
+        if (record) {
+          for (const key of Object.keys(payload)) if (values[key] === baseline[key]) delete payload[key];
+          return api("records/edit", {...payload, id, revision});
         }
-        payload.id = id;
-        payload.revision = record.revision;
-      } else {
+        payload.type = type.value;
         const signature = JSON.stringify(payload);
         if (sentSignature && sentSignature !== signature) requestId = crypto.randomUUID();
         sentSignature = signature;
-        payload.requestId = requestId;
-      }
-      feedback.replaceChildren();
-      submit.disabled = true;
-      try {
-        const saved = await api("records/" + (record ? "edit" : "create"), payload);
-        if (form.isConnected) go(compact ? "#project-gantt/" + encodeURIComponent(saved.id) : recordURL(saved.id));
-      } catch (error) {
-        if (!form.isConnected) return;
-        feedback.append(notice(error.message));
-        if (record && error.status === 409) {
-          try { await resolveConflict(); }
-          catch (readError) { feedback.append(notice(readError.message)); submit.disabled = false; }
-        } else submit.disabled = false;
-      }
+        return api("records/create", {...payload, requestId});
+      },
+      onSaved:saved => record ? refreshAfterEdit() : go(compact ? "#project-gantt/" + encodeURIComponent(saved.id) : recordURL(saved.id))
     });
   }
 
@@ -537,8 +528,12 @@ import { showVaultCheck } from "./vault-check.js";
       } else if (page === "record" && (recordId || params.has("path"))) {
         main.replaceChildren();
         await recordPage(decodeURIComponent(recordId || ""), params, version);
-      } else if (page === "new" || (page === "edit" && recordId)) {
-        await editPage(page === "edit" ? decodeURIComponent(recordId) : null, recordId, params, version);
+      } else if (page === "edit" && recordId) {
+        const id = decodeURIComponent(recordId);
+        history.replaceState(null, "", recordURL(id));
+        await recordPage(id, params, version, true);
+      } else if (page === "new") {
+        await editPage(null, recordId, params, version);
       } else if (isPlan) {
         const view = node("div", "planning-view");
         main.replaceChildren(view);
@@ -574,6 +569,22 @@ import { showVaultCheck } from "./vault-check.js";
     }
   }
   document.querySelector(".skip-link").addEventListener("click",event => { event.preventDefault(); main.focus(); });
-  window.addEventListener("hashchange", () => { main.focus({preventScroll: true}); window.scrollTo(0,0); render(); });
+  window.navigation?.addEventListener("navigate", event => {
+    if (!editorDialogOpen() || !event.hashChange || !event.cancelable) return;
+    event.preventDefault();
+    const destination = event.destination;
+    leaveEditor(() => {
+      if (event.navigationType === "traverse") window.navigation.traverseTo(destination.key);
+      else window.navigation.navigate(destination.url, {history:event.navigationType === "replace" ? "replace" : "push"});
+    });
+  });
+  window.addEventListener("hashchange", event => {
+    const navigate = () => { main.focus({preventScroll:true}); window.scrollTo(0,0); render(); };
+    if (!editorDialogOpen()) { navigate(); return; }
+    // Older browsers deliver Back only after committing it. Restore the draft
+    // above the destination so continuing the edit preserves a working Back link.
+    history.pushState(null, "", event.oldURL);
+    leaveEditor(() => history.back());
+  });
   render();
 })();

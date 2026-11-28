@@ -1,3 +1,5 @@
+import {openEditorDialog} from "./editor-dialog.js";
+import {markdownEditor} from "./markdown-editor.js";
 import {openObsidianSource} from "./obsidian-workspace.js";
 import {resultURL} from "./gantt-okr-values.js";
 import {recordedSpan} from "./gantt-rows.js";
@@ -54,7 +56,7 @@ export function evidenceLink(ui, root, source, label) {
 
 export function rowInspector(ui, settings) {
   const {node, button, labelled, link, api, notice} = ui;
-  const {task, row, root, refresh, deselect} = settings;
+  const {task, row, root, deselect} = settings;
   const group = settings.group;
   const readOnly = !!task.readOnly;
   const milestone = row?.kind === "milestone";
@@ -178,7 +180,7 @@ export function rowInspector(ui, settings) {
     const dateActions = node("div", "gantt-date-actions");
     const scenario = button("Что если…", "gantt-action", () => {
       const form = openForm("Что изменится при переносе прогноза?");
-      if (form) scenarioForm(ui, {task, form, actions, trigger: scenario, markdownLink, refresh});
+      scenarioForm(ui, {task, form, actions, trigger: scenario, markdownLink, refresh});
     });
     dateActions.append(editDate);
     if (!task.completed) dateActions.append(scenario);
@@ -214,7 +216,7 @@ export function rowInspector(ui, settings) {
   const attribution = task.brief?.text && byline(task.brief);
   if (attribution) briefTitle.append(node("span", "gantt-byline", attribution));
   briefHead.append(briefTitle);
-  if (!readOnly) briefHead.append(button("Изменить", "gantt-action", () => textForm("brief", task.brief)));
+  if (!readOnly) briefHead.append(button("Изменить", "gantt-action", event => textForm("brief", task.brief, event.currentTarget)));
   brief.append(briefHead);
   if (task.brief?.text) {
     brief.append(prose(task.brief.text, "gantt-summary-text"), evidence(task.brief));
@@ -223,7 +225,7 @@ export function rowInspector(ui, settings) {
   const latest = node("div", "gantt-pane gantt-history");
   const latestHead = node("div", "gantt-pane-heading");
   latestHead.append(node("h3", "", "История"));
-  if (!readOnly) latestHead.append(button("Добавить", "gantt-action", () => textForm("latest", null)));
+  if (!readOnly) latestHead.append(button("Добавить", "gantt-action", event => textForm("latest", null, event.currentTarget)));
   latest.append(latestHead);
   const events = node("div", "gantt-events");
   latest.append(events);
@@ -237,7 +239,7 @@ export function rowInspector(ui, settings) {
     meta.append(date);
     const author = authorText(item);
     if (author) meta.append(node("span", "gantt-byline", author));
-    if (!readOnly) meta.append(button("Исправить", "gantt-action", () => textForm("latest", item)));
+    if (!readOnly) meta.append(button("Исправить", "gantt-action", event => textForm("latest", item, event.currentTarget)));
     article.append(meta, prose(item.text.slice(operation?.[0].length || 0), "gantt-event-text", !!operation), evidence(item));
     return article;
   }
@@ -269,7 +271,7 @@ export function rowInspector(ui, settings) {
     latest.append(workEvents(ui, {load:journal.workEvents, open:task.latestTotal === 0,
       selectMember:settings.selectMember, evidence, markdownLink, authorText}));
   }
-  const editor = node("div", "gantt-editor-place");
+  let dialog;
 
   const sections = node("div", "gantt-inspector-switch");
   sections.setAttribute("role", "group");
@@ -287,47 +289,39 @@ export function rowInspector(ui, settings) {
     control.setAttribute("aria-controls", pane.id);
     sections.append(control);
   }
-  selectPane("brief");
+  selectPane(settings.pane || "brief");
   sectionHeader.append(sections);
   panel.append(identity, brief, latest);
-  if (!group) panel.append(dependencySection(ui, {...settings, markdownLink, openForm, actions}));
-  panel.append(editor);
+  if (!group) panel.append(dependencySection(ui, {...settings, markdownLink, openForm, actions, refresh}));
 
-  function canLeave() {
-    if (!editor.firstChild) return true;
-    const feedback = editor.querySelector(".gantt-form-feedback");
-    feedback.textContent = "Сохраните правку или нажмите «Отмена».";
-    editor.querySelector(".work-tools button")?.focus();
-    return false;
+  function refresh(message) {
+    dialog.close();
+    return settings.refresh(message);
   }
   function openForm(title) {
-    if (!canLeave()) return null;
     const form = node("form", "gantt-form");
-    form.append(node("h3", "", title));
-    editor.replaceChildren(form);
+    form.setAttribute("aria-label", title);
     return form;
   }
-  function actions(form, label, cancelFocus) {
+  function actions(form, label, trigger, initialFocus) {
     const commands = node("div", "work-tools");
     const submit = node("button", "button button-primary", label);
     submit.type = "submit";
-    commands.append(submit, button("Отмена", "button button-secondary", () => {
-      editor.replaceChildren();
-      cancelFocus.focus();
-    }));
+    commands.append(submit, button("Отмена", "button button-secondary", () => dialog.requestClose()));
     const feedback = node("div", "gantt-form-feedback");
     feedback.setAttribute("aria-live", "polite");
     form.append(commands, feedback);
+    dialog = openEditorDialog({title: form.getAttribute("aria-label"), context: task.title, trigger, content: form,
+      initialFocus: initialFocus || form.querySelector("textarea, input, select"), isBusy: () => submit.disabled});
     return {submit, feedback};
   }
-  function textForm(field, entry) {
-    const trigger = document.activeElement;
+  function textForm(field, entry, trigger) {
     const form = openForm(field === "brief" ? "Редактировать сводку" : entry ? "Исправить событие" : "Новое событие");
-    if (!form) return;
     const text = node("textarea");
-    text.name = "text"; text.rows = 3; text.value = entry?.text || "";
+    text.name = "text"; text.value = entry?.text || "";
     text.required = field === "latest";
-    form.append(labelled(field === "brief" ? "Коротко" : "Текст события", text));
+    form.append(markdownEditor(ui, text, {label: field === "brief" ? "Коротко" : "Текст события",
+      render: value => prose(value, field === "brief" ? "gantt-summary-text" : "gantt-event-text")}));
     const date = node("input");
     if (field === "latest") {
       date.type = "date"; date.name = "date"; date.value = entry?.date || "";
@@ -343,7 +337,8 @@ export function rowInspector(ui, settings) {
     const {submit, feedback} = actions(form, "Сохранить", trigger);
     form.addEventListener("submit", async event => {
       event.preventDefault();
-      submit.disabled = true;
+      if (submit.disabled) return;
+      form.inert = submit.disabled = true;
       feedback.replaceChildren();
       try {
         const payload = {id: task.id, revision: task.revision, field, text: text.value};
@@ -360,9 +355,8 @@ export function rowInspector(ui, settings) {
         await refresh("Изменения сохранены.");
       } catch (error) {
         await displayError(error, feedback);
-      } finally { submit.disabled = false; }
+      } finally { form.inert = submit.disabled = false; }
     });
-    text.focus();
   }
   async function displayError(error, feedback) {
     feedback.replaceChildren(notice(error.message));
@@ -375,13 +369,12 @@ export function rowInspector(ui, settings) {
     if (!group) info.append(node("p", "", Object.entries(dateLabels).map(([field, label]) => label + " · " + dateText(current[field])).join(" / ")));
     info.append(prose(current.brief?.text || "Сводка пока не записана.", "gantt-summary-text"));
     for (const entry of current.latest) info.append(prose(dateText(entry.date) + " · " + entry.text, "gantt-event-text"));
-    feedback.append(info, button("Загрузить текущую карточку", "button button-secondary", () => refresh("Карточка перечитана.")));
+    feedback.append(info, button("Отбросить правку и перечитать карточку", "button button-secondary", () => refresh("Карточка перечитана.")));
   }
 
   function dateForm(dragged) {
     if (dragged) selectPane("work");
     const form = openForm(milestone ? "Даты вехи" : "Даты задачи");
-    if (!form) return;
     const field = node("select");
     for (const key of milestone ? ["due", "forecast", "completed"] : ["due", "forecast", "completed", "start"]) field.append(ui.option(key, dateLabels[key]));
     if (dragged) field.value = dragged.field;
@@ -390,13 +383,12 @@ export function rowInspector(ui, settings) {
     const reasonBox = labelled("Основание", reason);
     const preview = node("div", "gantt-date-preview");
     form.append(labelled("Поле карточки", field), labelled("Дата", date), reasonBox, preview);
-    const {submit, feedback} = actions(form, "", editDate);
+    const labels = {start: "Сохранить начало", due: "Проверить перенос", forecast: "Проверить прогноз", completed: "Проверить факт"};
     let proposal = null;
     function invalidate() {
       proposal = null;
       preview.replaceChildren();
       feedback.replaceChildren();
-      const labels = {start: "Сохранить начало", due: "Проверить перенос", forecast: "Проверить прогноз", completed: "Проверить факт"};
       submit.textContent = labels[field.value];
     }
     function fill() {
@@ -408,11 +400,11 @@ export function rowInspector(ui, settings) {
       reason.required = field.value === "completed";
       reasonBox.hidden = !["forecast", "completed"].includes(field.value);
       reasonBox.querySelector("span").textContent = reason.required ? "Основание изменения факта завершения" : "Основание прогноза (необязательно)";
-      invalidate();
     }
     fill();
     if (dragged) date.value = dragged.value;
-    field.addEventListener("change", fill);
+    const {submit, feedback} = actions(form, labels[field.value], editDate, date);
+    field.addEventListener("change", () => { fill(); invalidate(); });
     date.addEventListener("input", invalidate);
     reason.addEventListener("input", invalidate);
     form.addEventListener("submit", async event => {
@@ -447,9 +439,8 @@ export function rowInspector(ui, settings) {
         await displayError(error, feedback);
       } finally { submit.disabled = field.disabled = date.disabled = reason.disabled = false; }
     });
-    date.focus();
   }
-  return {element: panel, editing: () => !!editor.firstChild, canLeave, dateForm};
+  return {element: panel, dateForm};
 }
 
 export {rowInspector as taskInspector};

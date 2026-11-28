@@ -28,12 +28,14 @@ def add_commands(commands):
         parser.add_argument("--offset", type=brief.offset, default=0)
 
     show = command("report-show", "прочитать сохранённый выпуск и его источники")
+    edit = command("report-edit", "сохранить правку текста прочитанного выпуска")
+    edit.add_argument("--revision", required=True, help="ревизия выпуска из report-show")
     finalize = command("report-finalize", "утвердить прочитанную ревизию черновика")
     finalize.add_argument("--revision", required=True, help="ревизия черновика из report-show")
     source = command("report-source", "сверить одно основание выпуска со строкой Markdown")
     template = command("report-template-show", "прочитать текущую или указанную версию шаблона")
     series = command("report-series-show", "прочитать правила серии и даты очередного выпуска")
-    for parser in (show, finalize, source, template, series):
+    for parser in (show, edit, finalize, source, template, series):
         parser.add_argument("id", help="ID из списка")
     source.add_argument("--index", type=brief.offset, required=True, help="индекс основания из sources, начиная с 0")
     template.add_argument("--version", type=int, help="номер опубликованной версии")
@@ -45,7 +47,7 @@ def add_commands(commands):
     for parser in (new_issue, new_template, new_series):
         parser.add_argument("title", help="название")
         parser.add_argument("--request-id", help="устойчивый ключ для повтора операции")
-    for parser in (new_issue, new_template):
+    for parser in (new_issue, edit, new_template):
         body = parser.add_mutually_exclusive_group(required=True)
         body.add_argument("--body-file", metavar="ПУТЬ", help="файл Markdown в UTF-8 или - для stdin")
         body.add_argument("--body", help="текст Markdown")
@@ -108,6 +110,8 @@ def run(root, args):
     if args.body_file == "-" and getattr(args, "sources_file", None) == "-":
         raise ValueError("Передайте через stdin либо текст отчёта, либо JSON источников. Для другого укажите файл.")
     body = _text_file(args.body_file) if args.body_file is not None else args.body
+    if args.command == "report-edit":
+        return reports.edit_issue(root, args.id, revision=args.revision, body=body)
     if args.command == "report-template-save":
         result = reports.save_template(root, title=args.title, id=args.id, revision=args.revision, audience=args.audience,
                                        guidance=args.guidance, body=body, request_id=args.request_id)

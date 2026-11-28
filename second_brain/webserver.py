@@ -111,8 +111,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             # JSON escapes can use six bytes for one character of pasted text.
             json_limit = 6 * MAX_TEXT_BYTES + 4096 if capture_text else 64000
-            if self.mode == "work" and path in ("/api/reports/issue", "/api/reports/template"):
-                json_limit = 3 * 1024 * 1024  # Includes the report, citations and JSON Unicode escapes.
+            if self.mode == "work" and path in ("/api/reports/issue", "/api/reports/template", "/api/reports/edit",
+                                                "/api/records/create", "/api/records/edit"):
+                json_limit = 3 * 1024 * 1024  # Includes Markdown, citations and JSON Unicode escapes.
             content = self._body(json_limit)
             if content is None:
                 return

@@ -552,7 +552,13 @@ def _patch_header(header, record, changes):
     return b"".join([*output, lines[-1]])
 
 
-def edit(root: Path, record_id: str, revision: str, changes: dict) -> Path:
+def markdown_newline(body, header):
+    """Use the note's existing line ending when a text editor normalized its input."""
+    first = re.search(r"\r\n|\n|\r", body)
+    return first[0] if first else ("\r\n" if header.startswith(b"---\r\n") else "\n")
+
+
+def edit(root: Path, record_id: str, revision: str, changes: dict, *, preserve_newlines=False) -> Path:
     """Apply an explicit patch at a known revision, without renaming its file."""
     root = Path(root).resolve()
     if changes.keys() - (EDITABLE | {"body"}):
@@ -572,6 +578,14 @@ def edit(root: Path, record_id: str, revision: str, changes: dict) -> Path:
         metadata = {key: value for key, value in changes.items()
                     if key != "body" and value != record.get(key)}
         body = changes.get("body", record["body"])
+        if preserve_newlines and "body" in changes:
+            # Browsers normalize a textarea's line endings even when the owner
+            # only touched a title or added a single line to a Windows note.
+            normalized = record["body"].replace("\r\n", "\n").replace("\r", "\n")
+            if body == normalized:
+                body = record["body"]
+            elif "\r" not in body:
+                body = body.replace("\n", markdown_newline(record["body"], header))
         if not metadata and body == record["body"]:
             return path
         header = _patch_header(header, record, metadata)

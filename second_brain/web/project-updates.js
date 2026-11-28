@@ -1,3 +1,5 @@
+import {openEditorDialog} from "./editor-dialog.js";
+import {markdownEditor} from "./markdown-editor.js";
 import {dateText} from "./gantt-axis.js";
 import {recordDocument} from "./record-document.js";
 
@@ -11,16 +13,7 @@ export function projectUpdatesPanel(ui, project, afterSave) {
   const header = node("div", "project-updates-heading");
   header.append(node("h2", "work-heading", "Коротко"));
   if (afterSave) {
-    const edit = button("Изменить", "text-link", () => {
-      const form = briefEditor(ui, project, afterSave, () => {
-        form.remove();
-        edit.hidden = false;
-        edit.focus();
-      });
-      edit.hidden = true;
-      brief.append(form);
-      form.querySelector("textarea").focus();
-    });
+    const edit = button("Изменить", "text-link", () => briefEditor(ui, project, edit, afterSave));
     header.append(edit);
   }
   brief.append(header);
@@ -95,11 +88,10 @@ export function projectUpdatesPanel(ui, project, afterSave) {
 }
 
 
-function briefEditor(ui, project, afterSave, cancel) {
-  const {node, button, labelled, api, notice} = ui;
+function briefEditor(ui, project, trigger, afterSave) {
+  const {node, button, api, notice} = ui;
   const form = node("form", "project-brief-editor");
   const input = node("textarea");
-  input.rows = 2;
   input.maxLength = 2400;
   input.required = true;
   input.value = project.projectUpdates.brief?.text || "";
@@ -107,17 +99,23 @@ function briefEditor(ui, project, afterSave, cancel) {
   const save = node("button", "button button-primary", "Сохранить");
   save.type = "submit";
   const actions = node("div", "work-tools");
-  actions.append(save, button("Отмена", "text-link", cancel));
-  form.append(labelled("Коротко о проекте", input), actions, messages);
+  actions.append(save, button("Отмена", "button button-secondary", () => dialog.requestClose()));
+  form.append(markdownEditor(ui, input, {label:"Коротко о проекте · одна фраза до 2400 символов", render:value => recordDocument(project, value, ui)}),
+    actions, messages);
+  const dialog = openEditorDialog({title:"Редактировать сводку проекта", context:project.title, trigger,
+    content:form, initialFocus:input, isBusy:() => save.disabled});
   let revision = project.revision;
   form.addEventListener("submit", async event => {
     event.preventDefault();
     if (save.disabled) return;
-    save.disabled = true;
+    form.inert = save.disabled = true;
     messages.replaceChildren();
     try {
       await api("project-brief", {id:project.id, revision, text:input.value.trim()});
-      if (form.isConnected) afterSave();
+      if (form.isConnected) {
+        dialog.close();
+        await afterSave();
+      }
     } catch (error) {
       if (!form.isConnected) return;
       messages.append(notice(error.message));
@@ -129,7 +127,6 @@ function briefEditor(ui, project, afterSave, cancel) {
           save.textContent = "Сохранить после сверки";
         } catch (readError) { messages.append(notice(readError.message)); }
       }
-    } finally { save.disabled = false; }
+    } finally { form.inert = save.disabled = false; }
   });
-  return form;
 }

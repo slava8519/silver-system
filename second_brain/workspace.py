@@ -145,4 +145,4 @@ class Workspace:
         changes = {field: data[name] for name, field in FIELDS.items() if name in data}
         if "body" in data:
             changes["body"] = data["body"]
-        return self._detail(storage.edit(self.root, record_id, revision, changes), record_id)
+        return self._detail(storage.edit(self.root, record_id, revision, changes, preserve_newlines=True), record_id)
